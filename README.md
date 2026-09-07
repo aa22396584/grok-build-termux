@@ -338,6 +338,10 @@ See [`TEST_READY.md`](TEST_READY.md) and [`PROJECT.md`](PROJECT.md) for full arc
 
 ---
 
+## Support
+
+If this project saved you some time, you can [buy me a coffee](https://buymeacoffee.com/iml1s).
+
 ## License
 
 This project is licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
