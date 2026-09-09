@@ -37,30 +37,16 @@
 
 ## Installation
 
-### Method 1: Termux Package Manager (Recommended)
+### Method 1: GitHub Releases (Recommended)
 
-Install `grok-build` and essential runtime dependencies directly inside Termux:
+There is no `grok-build` package in Termux APT yet. The supported install is the installer: it detects `aarch64` or `x86_64`, downloads the matching tarball from [GitHub Releases](https://github.com/ImL1s/grok-build-termux/releases/latest), verifies `SHA256SUMS.txt`, and installs into `$PREFIX/bin/grok`.
 
 ```sh
-# 1. Update package lists
+# Runtime tools used by grok doctor / search / git
 pkg update -y
+pkg install -y git ripgrep fd bash termux-api curl
 
-# 2. Install required CLI tools & Termux:API helpers
-pkg install -y git ripgrep fd bash termux-api
-
-# 3. Install Grok Build (when available in Termux APT repositories)
-pkg install -y grok-build
-```
-
-> [!TIP]
-> Make sure the **Termux:API** companion application is installed on your Android device (available on F-Droid or GitHub Releases) to enable native clipboard integration and URL browser dispatch.
-
-### Method 2: Prebuilt Binary (GitHub Releases)
-
-Use the installer. It detects `aarch64` or `x86_64`, downloads the matching tarball from [GitHub Releases](https://github.com/ImL1s/grok-build-termux/releases/latest), verifies `SHA256SUMS.txt`, and installs into `$PREFIX/bin/grok`.
-
-```sh
-# Latest release
+# Latest grok binary
 curl -fsSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
 
 # Pin a version
@@ -71,6 +57,9 @@ grok --version
 ```
 
 Release assets are named `grok-build-termux-<tag>-<aarch64|x86_64>-linux-android.tar.gz` plus `SHA256SUMS.txt`.
+
+> [!TIP]
+> Install the **Termux:API** companion app (F-Droid or GitHub Releases) for native clipboard and `termux-open-url`.
 
 ---
 
@@ -325,10 +314,10 @@ This repository actively tracks the upstream [`xai-org/grok-build`](https://gith
 
 ## Testing & Quality Assurance
 
-The port is verified by a 5-tier test suite covering all 32 inventoried features:
+The port is verified by a 6-tier test suite (feature, boundary, pairwise, scenarios, adversarial, packaging):
 
 ```sh
-# Run full E2E test suite (459 tests)
+# Run full E2E test suite (472 tests)
 python3 tests/e2e/runner.py --tier all && python3 tests/e2e/runner.py --tier tier5
 
 # Run ELF alignment self-tests
