@@ -1,10 +1,8 @@
-//! In-guest diagnostics HTTP server (`/ready`, `/statusz`, `/logs`) for the
-//! standalone workspace-server.
+//! In-guest diagnostics HTTP server (`/ready`, `/statusz`, `/logs`) for the standalone workspace-server.
 //!
-//! The surface is reachable by any process inside the user's own sandbox
-//! (loopback-only TCP, or a 0600 Unix socket) and is never exposed through
-//! the sandbox port mapping. `/logs` returns the raw daemon log: treat its
-//! output as sensitive and keep the log stream free of secrets.
+//! Any process inside the user's own sandbox can reach it (loopback-only TCP, or a 0600 Unix socket).
+//! It is never exposed through the sandbox port mapping.
+//! `/logs` returns the raw daemon log: treat its output as sensitive and keep the log stream free of secrets.
 
 use std::io::{self, Read as _, Seek as _, SeekFrom};
 use std::net::Ipv4Addr;
@@ -49,7 +47,7 @@ pub fn default_diag_socket_path() -> PathBuf {
 /// Default loopback TCP port for Windows guests.
 pub const DEFAULT_DIAG_PORT: u16 = 6016;
 
-/// Grep-able daemon-log marker for a diagnostics bind failure.
+/// Grep-able marker written to the daemon log when the diagnostics bind fails.
 pub const DIAG_BIND_FAILED_MARKER: &str = "diagnostics server bind failed";
 
 /// Process exit code for a fatal diagnostics bind failure in `--daemonize` mode.
@@ -71,7 +69,7 @@ pub enum DiagState {
     Failed,
 }
 
-/// `/ready` `error_class` when [`DiagState::Failed`] (`hub_auth` / `hub_connect` / `unknown`).
+/// `/ready` `error_class` when the state is [`DiagState::Failed`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
@@ -83,13 +81,11 @@ pub enum ErrorClass {
 /// Soft cap on `/ready` `error_detail` so guest-local messages stay short.
 const MAX_ERROR_DETAIL_BYTES: usize = 256;
 
-/// Response body for `/ready`. The field set is a frozen contract with the
-/// sandbox readiness gate: never rename or remove fields; additions are
-/// backward-compatible.
+/// Response body for `/ready`.
+/// The field set is a frozen contract with the sandbox readiness gate: never rename or remove fields; additions are backward-compatible.
 #[derive(Debug, Serialize)]
 struct ReadyBody {
-    /// Serialized as an explicit `null` (never omitted) for nonce-less
-    /// launches.
+    /// Serialized as an explicit `null` (never omitted) for nonce-less launches.
     launch_id: Option<String>,
     state: DiagState,
     pid: u32,
@@ -110,13 +106,11 @@ struct StatuszBody {
     #[serde(flatten)]
     ready: ReadyBody,
     os: &'static str,
-    /// Advisory image capability tokens, sorted, as published by the owning
-    /// server. Never an authorization input: the guest can forge the markers.
-    /// Copied out of the shared snapshot because serde only serializes
-    /// `Arc<[T]>` under its `rc` feature.
+    /// Advisory image capability tokens, sorted, as published by the owning server.
+    /// Never an authorization input: the guest can forge the markers.
+    /// Copied out of the shared snapshot because serde only serializes `Arc<[T]>` under its `rc` feature.
     image_capabilities: Vec<String>,
-    /// `false` = the declaration was absent/unreadable/self-tokenless
-    /// (UNKNOWN), which is not the same as "declares nothing".
+    /// `false` means the declaration was absent, unreadable, or lacking its own token (UNKNOWN); that is not the same as "declares nothing".
     image_capabilities_declared: bool,
 }
 
@@ -139,7 +133,7 @@ impl Inner {
     }
 }
 
-/// Cloneable handle publishing hub lifecycle transitions to the server.
+/// Cloneable handle for publishing hub state changes to the diagnostics server.
 #[derive(Debug, Clone)]
 pub struct DiagHandle {
     launch_id: Option<String>,
@@ -147,8 +141,7 @@ pub struct DiagHandle {
 }
 
 impl DiagHandle {
-    /// `launch_id` is the caller-minted per-spawn nonce, echoed verbatim on
-    /// `/ready` (`null` for nonce-less local launches).
+    /// `launch_id` is a nonce the caller mints for each spawn; `/ready` echoes it verbatim (`null` for local launches without one).
     pub fn new(launch_id: Option<String>) -> Self {
         Self {
             launch_id,
@@ -166,11 +159,9 @@ impl DiagHandle {
         }
     }
 
-    /// Initial hello completed, or a reconnect's serve replay settled.
-    /// No-op after [`Self::set_shutting_down`] or [`Self::set_failed`], and
-    /// while a terminal close code is latched: a stale reconnect settle must
-    /// not clear `last_close_code` or republish connected. Terminal closes do
-    /// not reconnect on this handle.
+    /// Called when the initial hello completes, or when a reconnect's serve replay settles.
+    /// A stale reconnect settle must not clear `last_close_code` or republish connected.
+    /// Terminal closes do not reconnect on this handle.
     pub fn set_connected(&self) {
         let mut inner = self.lock();
         if inner.shutting_down || inner.is_failed() || inner.last_close_code.is_some() {
@@ -183,9 +174,8 @@ impl DiagHandle {
         inner.last_close_code = None;
     }
 
-    /// Server socket dropped. No-op after [`Self::set_failed`].
-    /// Does not clear `last_close_code`: the SDK fires this after a terminal
-    /// close, and the sandbox gate still needs the code.
+    /// The server socket dropped. No-op after [`Self::set_failed`].
+    /// Does not clear `last_close_code`: the SDK fires this after a terminal close, and the sandbox gate still needs the code.
     pub fn set_disconnected(&self) {
         let mut inner = self.lock();
         if inner.is_failed() {
@@ -195,9 +185,9 @@ impl DiagHandle {
         inner.state_changed_at = now_ms();
     }
 
-    /// Hub sent a terminal close (4100–4199). Latches disconnected and records
-    /// the code on `/ready`. [`Self::set_disconnected`] must not clear it —
-    /// the SDK also fires `on_disconnect` after this callback.
+    /// Hub sent a terminal close (4100 to 4199). Latches disconnected and records the code on `/ready`.
+    /// [`Self::set_disconnected`] must not clear it; the SDK also fires `on_disconnect` after this callback.
+    /// A later [`Self::set_connected`] is a no-op while the latch is set; only [`Self::clear_terminal_close`] (deliberate revival) clears it.
     pub fn set_terminal_close(&self, code: u16) {
         let mut inner = self.lock();
         if inner.is_failed() {
@@ -208,9 +198,38 @@ impl DiagHandle {
         inner.state_changed_at = now_ms();
     }
 
+    /// Drop a latched terminal close so a deliberate revival (SDK reconnect after embedder opt-in, or remint/reexec) can publish connected again.
+    /// No-op after [`Self::set_failed`] or [`Self::set_shutting_down`]: those states stay terminal.
+    /// Does not change `state`; callers follow with [`Self::set_connected`] once the new hub hello settles.
+    pub fn clear_terminal_close(&self) {
+        let mut inner = self.lock();
+        if inner.is_failed() || inner.shutting_down {
+            return;
+        }
+        inner.last_close_code = None;
+        inner.state_changed_at = now_ms();
+    }
+
+    /// Clear the latch and publish connected in one step, for a deliberate revival (the epoch-guarded reconnect settle).
+    /// Only codes in `revivable` are cleared: a newer non-revivable latch survives a stale settle.
+    pub fn revive_connected(&self, revivable: &[u16]) {
+        let mut inner = self.lock();
+        if inner.is_failed() || inner.shutting_down {
+            return;
+        }
+        if let Some(code) = inner.last_close_code
+            && !revivable.contains(&code)
+        {
+            return;
+        }
+        inner.last_close_code = None;
+        inner.state = DiagState::Connected;
+        inner.state_changed_at = now_ms();
+    }
+
     /// Latch disconnected for process shutdown; later `set_connected` no-ops.
-    /// No-op after [`Self::set_failed`]. Leaves `last_close_code` so a drain
-    /// after hub CLEANUP still reports 4103 to the reconnect gate.
+    /// No-op after [`Self::set_failed`].
+    /// Leaves `last_close_code` so a drain after hub CLEANUP still reports 4103 to the reconnect gate.
     pub fn set_shutting_down(&self) {
         let mut inner = self.lock();
         if inner.is_failed() {
@@ -221,7 +240,7 @@ impl DiagHandle {
         inner.state_changed_at = now_ms();
     }
 
-    /// Terminal connect failure on `/ready`. Sticky; callers dwell before exit.
+    /// Terminal connect failure on `/ready`. Sticky; callers wait before exiting.
     /// Clears `last_close_code`: failed is its own class, not a hub close.
     pub fn set_failed(&self, error_class: ErrorClass, error_detail: impl Into<String>) {
         let mut inner = self.lock();
@@ -233,14 +252,22 @@ impl DiagHandle {
     }
 
     /// Publish the owner's advisory image capability snapshot on `/statusz`.
-    /// `declared = false` is UNKNOWN, not "declares nothing". Publish before
-    /// the socket binds so `/statusz` never serves the unpublished default;
-    /// taking the snapshot before any guest can write the declaration
-    /// directory is the caller's responsibility.
+    /// Publish before the socket binds so `/statusz` never serves the unpublished default.
     pub fn set_image_capabilities(&self, tokens: impl Into<Arc<[String]>>, declared: bool) {
         let mut inner = self.lock();
         inner.image_capabilities = tokens.into();
         inner.image_capabilities_declared = declared;
+    }
+
+    /// The state `/ready` reports right now, for owners that supervise their own hub connections
+    /// (a multi-folder daemon has no external poller to notice a connection that died for good).
+    pub fn state(&self) -> DiagState {
+        self.lock().state
+    }
+
+    /// The latched terminal close code, when the hub closed this connection for good.
+    pub fn last_close_code(&self) -> Option<u16> {
+        self.lock().last_close_code
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -252,9 +279,8 @@ impl DiagHandle {
         self.ready_body_locked(&inner)
     }
 
-    /// Body-building under a guard the caller already holds: the mutex is not
-    /// reentrant, so every multi-field reader goes through this rather than
-    /// composing methods that each take the lock.
+    /// Builds the body under a guard the caller already holds.
+    /// The mutex is not reentrant, so every multi-field reader goes through this rather than composing methods that each take the lock.
     fn ready_body_locked(&self, inner: &Inner) -> ReadyBody {
         let failed = inner.is_failed();
         ReadyBody {
@@ -305,9 +331,8 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Where the diagnostics server listens: a Unix socket on Linux, loopback TCP
-/// on Windows. Both variants compile everywhere so the TCP path is testable
-/// on Linux.
+/// Where the diagnostics server listens: a Unix socket on Linux, loopback TCP on Windows.
+/// Both variants compile everywhere so the TCP path is testable on Linux.
 #[derive(Debug, Clone)]
 pub enum DiagListener {
     #[cfg(unix)]
@@ -315,8 +340,8 @@ pub enum DiagListener {
     Tcp(u16),
 }
 
-/// Shared request state: the lifecycle handle plus the daemon log path
-/// (`None` when logs go to a terminal instead of a file — `/logs` is 404).
+/// Shared request state: the [`DiagHandle`] plus the daemon log path.
+/// The path is `None` when logs go to a terminal instead of a file; `/logs` is then 404.
 #[derive(Debug, Clone)]
 struct DiagContext {
     handle: DiagHandle,
@@ -372,8 +397,8 @@ fn router(ctx: DiagContext) -> Router {
             "/ready",
             get(|State(ctx): State<DiagContext>| async move {
                 let body = ctx.handle.ready_body();
-                // Non-2xx for "not ready" so naive HTTP probes agree with
-                // consumers that parse `state`. The body is served either way.
+                // Non-2xx for "not ready" so naive HTTP probes agree with consumers that parse `state`
+                // The body is served either way
                 let status = if body.state == DiagState::Connected {
                     StatusCode::OK
                 } else {
@@ -390,9 +415,9 @@ fn router(ctx: DiagContext) -> Router {
         .with_state(ctx)
 }
 
-/// Bind the listener and spawn the server task. Binding happens before this
-/// returns, so a bind failure surfaces synchronously. `log_file` is the
-/// daemon log served by `/logs` (`None` ⇒ `/logs` is 404).
+/// Bind the listener and spawn the server task.
+/// Binding happens before this returns, so a bind failure surfaces synchronously.
+/// `log_file` is the daemon log served by `/logs` (`None` means `/logs` is 404).
 pub async fn serve(
     listener: DiagListener,
     handle: DiagHandle,
@@ -446,7 +471,6 @@ pub async fn serve(
     }
 }
 
-/// A successfully bound diagnostics server.
 #[derive(Debug)]
 pub struct BoundDiag {
     /// Human-readable bound address for the startup log line.
@@ -580,8 +604,7 @@ mod tests {
 
         handle.set_connected();
         handle.set_shutting_down();
-        // A reconnect settling during the shutdown drain must not republish
-        // `connected`.
+        // A reconnect settling during the shutdown drain must not republish `connected`
         handle.set_connected();
 
         let (status, body) = get_json(port, "/ready").await;
@@ -615,8 +638,7 @@ mod tests {
         let port = bound.port.expect("tcp port");
 
         handle.set_connected();
-        // on_terminal_close, then a settle that still held the pre-close epoch,
-        // then on_disconnect — `/ready` must keep 4103.
+        // on_terminal_close, then a settle that still held the pre-close epoch, then on_disconnect: `/ready` must keep 4103
         handle.set_terminal_close(4103);
         handle.set_connected();
         handle.set_disconnected();
@@ -649,6 +671,23 @@ mod tests {
         );
         assert_eq!(handle.ready_body().state, DiagState::Disconnected);
 
+        handle.clear_terminal_close();
+        assert!(
+            handle.ready_body().last_close_code.is_none(),
+            "explicit clear must drop the latch"
+        );
+        assert_eq!(
+            handle.ready_body().state,
+            DiagState::Disconnected,
+            "clear does not republish connected by itself"
+        );
+        handle.set_connected();
+        assert_eq!(handle.ready_body().state, DiagState::Connected);
+        assert!(
+            handle.ready_body().last_close_code.is_none(),
+            "connected after a deliberate clear must omit last_close_code"
+        );
+
         handle.set_terminal_close(4103);
         handle.set_shutting_down();
         assert_eq!(
@@ -656,12 +695,87 @@ mod tests {
             Some(4103),
             "shutdown drain after CLEANUP still reports the close code"
         );
+        handle.clear_terminal_close();
+        assert_eq!(
+            handle.ready_body().last_close_code,
+            Some(4103),
+            "clear must not drop the latch after shutdown"
+        );
 
         handle.set_failed(ErrorClass::Unknown, "late fail");
         assert_eq!(handle.ready_body().state, DiagState::Failed);
         assert!(
             handle.ready_body().last_close_code.is_none(),
             "failed must not advertise last_close_code"
+        );
+        handle.clear_terminal_close();
+        assert_eq!(
+            handle.ready_body().state,
+            DiagState::Failed,
+            "clear must not unstick failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_clear_then_set_connected_revives_ready_after_4103() {
+        let handle = DiagHandle::new(None);
+        let bound = serve(DiagListener::Tcp(0), handle.clone(), None)
+            .await
+            .expect("bind");
+        let port = bound.port.expect("tcp port");
+
+        handle.set_connected();
+        handle.set_terminal_close(4103);
+        handle.set_connected();
+        let (status, body) = get_json(port, "/ready").await;
+        assert_eq!(status, 503);
+        assert_eq!(body["last_close_code"], 4103);
+
+        handle.clear_terminal_close();
+        handle.set_connected();
+        let (status, body) = get_json(port, "/ready").await;
+        assert_eq!(status, 200);
+        assert_eq!(body["state"], "connected");
+        assert!(
+            body.get("last_close_code").is_none(),
+            "revival must omit last_close_code: {body}"
+        );
+    }
+
+    /// `revive_connected` clears a revivable latch and publishes connected under one lock.
+    /// A non-revivable latch survives; a close after a revival latches again; failed stays failed.
+    #[test]
+    fn revive_connected_is_atomic_and_code_gated() {
+        let handle = DiagHandle::new(None);
+        handle.set_connected();
+        handle.set_terminal_close(4103);
+        handle.revive_connected(&[4103]);
+        assert_eq!(handle.ready_body().state, DiagState::Connected);
+        assert!(handle.ready_body().last_close_code.is_none());
+
+        handle.set_terminal_close(4100);
+        handle.revive_connected(&[4103]);
+        assert_eq!(
+            handle.ready_body().state,
+            DiagState::Disconnected,
+            "a non-revivable latch must survive a stale settle"
+        );
+        assert_eq!(handle.ready_body().last_close_code, Some(4100));
+
+        handle.clear_terminal_close();
+        handle.set_terminal_close(4103);
+        assert_eq!(
+            handle.ready_body().last_close_code,
+            Some(4103),
+            "a close after a revival must latch again"
+        );
+
+        handle.set_failed(ErrorClass::Unknown, "fail");
+        handle.revive_connected(&[4103]);
+        assert_eq!(
+            handle.ready_body().state,
+            DiagState::Failed,
+            "revive must not unstick failed"
         );
     }
 

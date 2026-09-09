@@ -2,14 +2,21 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Mid-turn: queue a follow-up with Enter, then bare Enter on the empty
-/// composer sends that top row now — cancel-and-send: the running turn is
-/// cancelled silently and the row runs as its own next turn, arriving on the
-/// wire as a standard `<user_query>` prompt with the interjection preamble.
+/// Mid-turn: queue a follow-up with Enter, then bare Enter on the empty composer sends that top row now (cancel-and-send).
+/// The running turn is cancelled silently and the row runs as its own next turn.
+/// It arrives on the wire as a standard `<user_query>` prompt with the interjection preamble.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn empty_enter_force_sends_top_queued() {
     let content = ContentController::start().await.expect("start content");
+    content
+        .server()
+        .set_settings(json!({ "allow_access": true, "dock_enabled": true }));
+    std::fs::write(
+        content.sandbox().grok_home().join("requirements.toml"),
+        "[features]\ndock = true\n",
+    )
+    .expect("pin dock in test requirements");
     let mut turn_one = content
         .expect_agent_turn_blocked("running turn before send-now", slow_turn_text("TURNONE"));
     let mut turn_two = content.expect_agent_turn(
@@ -18,9 +25,16 @@ async fn empty_enter_force_sends_top_queued() {
     );
 
     let binary = pager_binary().expect("resolve pager binary");
-    let mut harness =
-        PtyHarness::spawn_with_content(&binary, DEFAULT_ROWS, DEFAULT_COLS, &content, &[])
-            .expect("spawn pager");
+    let mut harness = PtyHarness::spawn_with_content_env_in_dir(
+        &binary,
+        DEFAULT_ROWS,
+        DEFAULT_COLS,
+        &content,
+        &[],
+        &[("GROK_DOCK", "1")],
+        Some(content.home()),
+    )
+    .expect("spawn pager");
 
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
@@ -41,15 +55,18 @@ async fn empty_enter_force_sends_top_queued() {
     harness
         .wait_for_text("please also check the logs", Duration::from_secs(10))
         .expect("queued text visible");
+    assert!(
+        !harness.contains_text("Queued · Enter to send now"),
+        "dock-shown queueing must not show the send-now tip\nscreen:\n{}",
+        harness.screen_contents()
+    );
 
-    // Composer is empty after queue; bare Enter sends the top row now. The
-    // shell cancels turn 1 (the abort beats the held completion) and promotes
-    // the row to run as turn 2.
+    // Composer is empty after queue; bare Enter sends the top row now
+    // The shell cancels turn 1 (the abort beats the held completion) and promotes the row to run as turn 2
     harness.inject_keys(b"\r").expect("empty Enter send-now");
     turn_one.release();
-    // The promoted row renders as a standard "❯ " prompt block via the
-    // turn-start adoption (the arrow prefix distinguishes the committed block
-    // from the prefix-less queue row).
+    // The promoted row renders as a standard "❯ " prompt block via the turn-start adoption
+    // The arrow prefix distinguishes the committed block from the prefix-less queue row
     harness
         .wait_for_text(
             "\u{276F} please also check the logs",
@@ -64,8 +81,7 @@ async fn empty_enter_force_sends_top_queued() {
         .await
         .expect("promoted turn expectation satisfied");
 
-    // The send-now cancel is silent: no cancelled marker between the partial
-    // turn-1 output and the promoted prompt.
+    // The send-now cancel is silent: no cancelled marker between the partial turn-1 output and the promoted prompt
     assert!(
         !harness.contains_text("Turn cancelled by user"),
         "send-now cancel must not render a cancelled marker\nscreen:\n{}",

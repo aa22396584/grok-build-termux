@@ -42,12 +42,12 @@ pub struct TaskToolInput {
     )]
     pub run_in_background: bool,
 
-    /// Capability mode controlling the child's tool access.
-    #[schemars(
-        description = "Capability mode: \"read-only\", \"read-write\", \"execute\", or \"all\". \
-            Controls which tool classes the child can use. Default is determined by the role."
-    )]
-    #[serde(default)]
+    /// Harness-internal only. Not advertised on the model-facing schema;
+    /// JSON that still sends this key is ignored so a `general-purpose`
+    /// child keeps its type's full toolset. Compat-harness adapters and
+    /// role/definition defaults still set this in-process.
+    #[schemars(skip)]
+    #[serde(default, skip_deserializing, skip_serializing)]
     pub capability_mode: Option<SubagentCapabilityMode>,
 
     /// Isolation mode for the child's execution environment.
@@ -583,9 +583,10 @@ pub fn task_output_waits(timeout_ms: Option<u64>) -> bool {
 }
 
 /// Default ceiling on a single blocking wait (`get_task_output` with a positive
-/// `timeout_ms`, `wait_tasks`). Capping is safe because a completed task pings
-/// the model, so a truncated wait costs one more poll, not the result.
-pub const MAX_WAIT_BLOCK_MS_DEFAULT: u64 = 600_000;
+/// `timeout_ms`, `wait_tasks`). One hour: above the p99 of timeouts the model
+/// actually requests, so the harness rarely hands back "still running" first.
+/// Hosts with a shorter transport deadline set `GROK_MAX_WAIT_BLOCK_MS`.
+pub const MAX_WAIT_BLOCK_MS_DEFAULT: u64 = 3_600_000;
 
 /// The blocking-wait ceiling in effect, honoring `GROK_MAX_WAIT_BLOCK_MS`.
 ///
@@ -600,16 +601,18 @@ pub fn max_wait_block_ms() -> u64 {
         .unwrap_or(MAX_WAIT_BLOCK_MS_DEFAULT)
 }
 
-/// Render a wait ceiling for tool descriptions, e.g. `600000 (~10 min)`.
+/// Render a wait ceiling for tool descriptions, e.g. `3600000 (~1 h)`.
 ///
 /// The unit is derived from the value, so it cannot drift from the millisecond
-/// figure beside it. Both branches round *down*: a cap must never read as
+/// figure beside it. All branches round *down*: a cap must never read as
 /// longer than it is.
 pub fn format_wait_cap_ms(ms: u64) -> String {
     if ms < 60_000 {
         format!("{ms} (~{} s)", ms / 1_000)
-    } else {
+    } else if ms < 3_600_000 {
         format!("{ms} (~{} min)", ms / 60_000)
+    } else {
+        format!("{ms} (~{} h)", ms / 3_600_000)
     }
 }
 
@@ -1383,13 +1386,6 @@ mod tests {
     }
 
     #[test]
-    fn task_tool_input_model_omitted_is_none() {
-        let input: TaskToolInput =
-            serde_json::from_str(r#"{"description": "d", "prompt": "p"}"#).unwrap();
-        assert!(input.model.is_none());
-    }
-
-    #[test]
     fn task_tool_input_model_parses_explicit() {
         let input: TaskToolInput =
             serde_json::from_str(r#"{"description": "d", "prompt": "p", "model": "grok-3"}"#)
@@ -1413,6 +1409,22 @@ mod tests {
         };
         let value = serde_json::to_value(&input).unwrap();
         assert!(value.get("model").is_none());
+        assert!(value.get("capability_mode").is_none());
+    }
+
+    #[test]
+    fn task_tool_input_ignores_capability_mode_json() {
+        let input: TaskToolInput = serde_json::from_str(
+            r#"{"description":"d","prompt":"p","capability_mode":"read-only"}"#,
+        )
+        .unwrap();
+        assert!(input.capability_mode.is_none());
+    }
+
+    #[test]
+    fn task_tool_input_schema_omits_capability_mode() {
+        let schema = serde_json::to_value(schemars::schema_for!(TaskToolInput)).unwrap();
+        assert!(schema["properties"].get("capability_mode").is_none());
     }
 
     #[test]
@@ -1786,8 +1798,9 @@ mod tests {
     fn format_wait_cap_ms_derives_its_unit_and_rounds_down() {
         assert_eq!(
             format_wait_cap_ms(MAX_WAIT_BLOCK_MS_DEFAULT),
-            "600000 (~10 min)"
+            "3600000 (~1 h)"
         );
+        assert_eq!(format_wait_cap_ms(3_600_000), "3600000 (~1 h)");
         assert_eq!(format_wait_cap_ms(300_000), "300000 (~5 min)");
         // Rounds down: 1.5 min must not read as 2.
         assert_eq!(format_wait_cap_ms(90_000), "90000 (~1 min)");

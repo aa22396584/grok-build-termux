@@ -24,8 +24,11 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 }
 
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Mixpanel {
     /// Create a new Mixpanel client with the given project token.
+    #[allow(clippy::disallowed_methods)] // transport-neutral crate; the grok CLI injects a policy client via with_client
     pub fn new(token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
@@ -74,6 +77,7 @@ impl Mixpanel {
 
         self.client
             .post("https://api.mixpanel.com/track")
+            .timeout(REQUEST_TIMEOUT)
             .form(&[("data", &encoded)])
             .send()
             .await?;
@@ -105,6 +109,7 @@ impl Mixpanel {
 
         self.client
             .post("https://api.mixpanel.com/engage")
+            .timeout(REQUEST_TIMEOUT)
             .form(&[("data", &encoded)])
             .send()
             .await?;
@@ -117,10 +122,9 @@ impl Mixpanel {
 mod tests {
     use super::*;
 
-    /// Project token is deliberately Bearer-shaped: it would be redacted
-    /// if `prepare_properties` ran the scrubber after token injection.
-    /// The `error` value catches the inverse regression: if the scrub
-    /// loop is dropped, the user-supplied Bearer leaks.
+    /// Project token is deliberately Bearer-shaped: it would be redacted if `prepare_properties` ran the scrubber after token
+    /// injection. The `error` value catches the inverse regression: if the scrub loop is dropped, the user-supplied Bearer
+    /// leaks.
     #[test]
     fn prepare_properties_scrubs_then_injects_token() {
         let project_token = "Bearer fake-project-token-abcdef0123456789";

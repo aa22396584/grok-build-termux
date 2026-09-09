@@ -1,7 +1,6 @@
 use std::{borrow::Borrow, fmt, ops::Deref};
 
 use agent_client_protocol as acp;
-use derive_more::From;
 use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use tokio::sync::oneshot;
 
@@ -128,6 +127,7 @@ mod client {
     use futures::{FutureExt as _, future::LocalBoxFuture};
 
     use super::*;
+    use derive_more::From;
 
     acp_define_request_response!(
         acp::RequestPermissionRequest,
@@ -353,6 +353,7 @@ mod agent {
     use futures::{FutureExt as _, future::LocalBoxFuture};
 
     use super::*;
+    use derive_more::From;
 
     acp_define_request_response!(
         acp::InitializeRequest,

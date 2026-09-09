@@ -25,6 +25,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         sampling_config: xai_grok_sampler::SamplerConfig {
             api_key: None,
             base_url: String::new(),
+            mtls_cert_dir: None,
             model: String::new(),
             max_completion_tokens: None,
             temperature: None,
@@ -39,12 +40,14 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             client_version: None,
             force_http1: false,
             max_retries: None,
+            rate_limit_retry_threshold: None,
             stream_tool_calls: false,
             idle_timeout_secs: None,
             client_identifier: None,
             reasoning_effort: None,
             deployment_id: None,
             user_id: None,
+            conversation_group_id: None,
             origin_client: None,
             attribution_callback: None,
             bearer_resolver: None,
@@ -54,12 +57,16 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
             doom_loop_recovery: None,
             header_injector: None,
         },
+        setup_failure: None,
+        run_shell_child_harness: None,
+        fail_start_metadata_write: false,
         alpha_test_key: None,
         auth_method_id: acp::AuthMethodId::new("test"),
         model_id: acp::ModelId::new("test"),
         auth: None,
         parent_cwd: PathBuf::from("/tmp"),
         parent_session_id: "test-parent".into(),
+        active_message_parent_prompt_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         inherited_tool_overrides: None,
         yolo_mode: false,
         subagent_event_tx: tx,
@@ -82,9 +89,10 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         write_file_enabled: true,
         goal_enabled: false,
         background_workflows_enabled: false,
-        ask_user_question_enabled: true,
+        ask_user_question_enabled: false,
         parent_non_interactive: false,
         parent_cmd_tx: None,
+        spawner_address_target: None,
         parent_session_info: None,
         subagent_roles: HashMap::new(),
         subagent_personas: HashMap::new(),
@@ -99,6 +107,7 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         backend_tools_enabled: true,
         respect_gitignore: false,
         path_not_found_hints: false,
+        tool_params_json: Default::default(),
         plugin_registry: None,
         models_manager: Default::default(),
         file_tool_overrides: None,
@@ -110,16 +119,18 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         subagents_max_depth: xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
         workflow_max_concurrent_agents:
             crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
+        media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits::default(),
         inference_idle_timeout_secs: 600,
+        parent_compaction: crate::session::CompactionPins::default(),
         auto_compact_threshold_tiers: crate::agent::subagent::AutoCompactThresholdTiers::default(),
         permission_handle: None,
         worktree_type: crate::util::config::WorktreeType::Linked,
         api_key_provider: None,
         image_description_model: crate::test_support::TEST_MODEL.to_owned(),
         workspace_ops: xai_grok_workspace::WorkspaceOps::for_test(),
-        auth_manager: Arc::new(crate::auth::AuthManager::new(
+        auth_manager: Arc::new(xai_grok_login::AuthManager::new(
             std::path::Path::new("/tmp/nonexistent-grok-test"),
-            crate::auth::GrokComConfig::default(),
+            xai_grok_login::GrokComConfig::default(),
         )),
         attribution_callback: None,
         parent_agent_name: None,
@@ -133,48 +144,18 @@ pub(crate) fn ctx_with_toggle(toggle: HashMap<String, bool>) -> SubagentSpawnCon
         parent_skills: None,
         parent_skills_config: xai_grok_agent::prompt::skills::SkillsConfig::default(),
         parent_compat: xai_grok_tools::types::compat::CompatConfig::default(),
-        task_completion_reservations: None,
         synthetic_trace_tx: None,
         task_output_tool_name: xai_grok_tools::reminders::task_completion::DEFAULT_TASK_OUTPUT_TOOL
             .to_string(),
+        scheduler_delete_tool_name: None,
+        scheduler_create_tool_name: None,
         auto_wake_enabled: true,
         goal_loop_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         parent_terminal_backend: None,
         parent_notification_handle: None,
         parent_scheduler_handle: None,
-    }
-}
-#[derive(Default)]
-pub(crate) struct DummyLspDispatch;
-#[async_trait::async_trait]
-impl xai_grok_tools::implementations::lsp::LspBackend for DummyLspDispatch {
-    fn ensure_started_background(&self) {}
-    async fn ensure_ready(&self) -> Result<(), String> {
-        Ok(())
-    }
-    fn is_ready(&self) -> bool {
-        true
-    }
-    async fn dispatch(
-        &self,
-        _input: &xai_grok_tools::implementations::lsp::LspToolInput,
-    ) -> xai_grok_tools::implementations::lsp::LspToolResult {
-        xai_grok_tools::implementations::lsp::LspToolResult {
-            text: String::new(),
-            is_error: false,
-        }
-    }
-    async fn drain_diagnostics(
-        &self,
-        _timeout: std::time::Duration,
-    ) -> Option<xai_grok_tools::implementations::lsp::DiagnosticsSummary> {
-        None
-    }
-    async fn notify_file_changed(&self, _path: &std::path::Path, _content: &str) {}
-    async fn read_diagnostics(
-        &self,
-        _paths: &[std::path::PathBuf],
-    ) -> Vec<xai_grok_tools::implementations::lsp::FileDiagnosticEntry> {
-        vec![]
+        subagent_sampling_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(
+            xai_grok_tools::implementations::grok_build::task::admission::DEFAULT_MAX_CONCURRENT,
+        )),
     }
 }

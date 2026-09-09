@@ -2,12 +2,9 @@
 #[allow(unused_imports)]
 use crate::common::*;
 
-/// Teardown must not gate `MOUSE_PASTE_RESET` on `MOUSE_CAPTURE_ENABLED`.
-/// Minimal never captures the mouse, so that flag is always false there, yet it
-/// enables bracketed paste like every other mode and `?2004l` rides in the same
-/// write — gating left `?2004` on in the user's shell after every clean minimal
-/// exit. Minimal is the only mode where the flag is false by design, making this
-/// the one such window reachable without fault injection.
+/// Teardown must not gate `MOUSE_PASTE_RESET` on `MOUSE_CAPTURE_ENABLED`. Minimal never captures
+/// the mouse, so that flag is always false there. Gating therefore left `?2004` on in the user's
+/// shell after every clean minimal exit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn minimal_quit_resets_bracketed_paste() {

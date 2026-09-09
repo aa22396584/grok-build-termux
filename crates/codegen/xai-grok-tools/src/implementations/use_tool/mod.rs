@@ -7,6 +7,11 @@ use crate::types::output::{MCPOutput, ToolOutput};
 use crate::types::tool::{ToolKind, ToolNamespace};
 use crate::util::mcp_truncate::{McpTruncateContext, truncate_tool_output};
 
+/// Wire name of the MCP dispatch tool. UIs special-case it: while its
+/// arguments stream, the target tool's name is still inside them, so the
+/// raw name is all a renderer has.
+pub const USE_TOOL_NAME: &str = "use_tool";
+
 /// Input for the `use_tool` meta-dispatch tool.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct UseToolInput {
@@ -26,19 +31,9 @@ fn object_value_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema
     })
 }
 
-/// Configuration for [`UseTool`].
-///
-/// Controls whether the native-tool corrective error is active.
-/// When `native_tool_correction` is `true` (default), `use_tool` detects
-/// native tool names via [`EnabledNativeToolNames`] and returns a targeted
-/// corrective error ("call it directly"). When `false`, the old generic
-/// "not a valid MCP tool name" warning fires for all unqualified names,
-/// regardless of whether the name is a native tool.
-///
-/// Use `false` if you want the pre-fix behavior (e.g., offline evaluation
-/// where the corrective error would alter the model's trajectory).
-///
-/// [`EnabledNativeToolNames`]: crate::types::resources::EnabledNativeToolNames
+/// Configuration for [`UseTool`]. Controls whether the native-tool corrective error is active. When
+/// `native_tool_correction` is `true` (default), `use_tool` detects native tool names via
+/// [`EnabledNativeToolNames`] and returns a targeted corrective error ("call it directly").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UseToolParams {
     /// Enable the native-tool corrective error. Default: `true`.
@@ -60,23 +55,9 @@ impl Default for UseToolParams {
 
 crate::register_resource!("grok_build", "UseTool", UseToolParams);
 
-/// Meta tool that dispatches calls to MCP tools discovered via `search_tool`.
-///
-/// `run()` reads [`InnerDispatch`] from `ToolCallContext::extensions` — set
-/// by `FinalizedToolset::call()` on every call — and dispatches to the target
-/// tool via the runtime `ToolDispatch` trait → `FinalizedToolset::call_raw()`.
-/// This bypasses the outer `ToolBridge` mutex and avoids deadlock.
-/// `call_raw()` skips reminders/persistence so post-processing
-/// runs exactly once (via the outer `call("use_tool")`).
-///
-/// If `InnerDispatch` is absent, dispatch fails with a clear error (should
-/// never happen in production — `FinalizedToolset::call()` always sets it).
-///
-/// The tool exists so its definition appears in the model's tool list —
-/// keeping the tool set stable across turns (no KV cache breaks when new
-/// MCP tools are discovered).
-///
-/// [`InnerDispatch`]: crate::types::resources::InnerDispatch
+/// Meta tool that dispatches calls to MCP tools discovered via `search_tool`. This bypasses the outer `ToolBridge` mutex and avoids deadlock.
+/// `call_raw()` skips reminders/persistence so post-processing runs exactly once (via the outer `call("use_tool")`). If `InnerDispatch` is
+/// absent, dispatch fails with a clear error (should never happen in production — `FinalizedToolset::call()` always sets it).
 #[derive(Debug, Default)]
 pub struct UseTool;
 
@@ -214,12 +195,9 @@ pub async fn dispatch_mcp_tool(
     }
 
     if let Some(source) = gateway_source {
-        // A gateway-catalog name can collide with a local `server__tool` MCP
-        // tool. Local wins on a name clash: probe local dispatch first and only
-        // fall through to the gateway when the local side reports the tool as
-        // not found, or rejects the catalog-derived name as an invalid local
-        // ToolId. A real error from a local tool that actually dispatched
-        // propagates instead of silently retrying against the gateway.
+        // A gateway-catalog name can collide with a local `server__tool` MCP tool. Local wins on a name clash: probe local dispatch first and only
+        // fall through to the gateway when the local side reports the tool as not found, or rejects the catalog-derived name as an invalid local
+        // ToolId. A real error from a local tool that actually dispatched propagates instead of silently retrying against the gateway.
         if tool_name.contains("__")
             && let Some(dispatch) = dispatch.clone()
         {
@@ -291,7 +269,7 @@ impl xai_tool_runtime::Tool for UseTool {
     type Output = ToolOutput;
 
     fn id(&self) -> xai_tool_protocol::ToolId {
-        xai_tool_protocol::ToolId::new("use_tool").expect("valid tool id")
+        xai_tool_protocol::ToolId::new(USE_TOOL_NAME).expect("valid tool id")
     }
 
     fn description(
@@ -299,7 +277,7 @@ impl xai_tool_runtime::Tool for UseTool {
         _ctx: &::xai_tool_runtime::ListToolsContext,
     ) -> xai_tool_types::ToolDescription {
         xai_tool_types::ToolDescription::new(
-            "use_tool",
+            USE_TOOL_NAME,
             crate::types::tool_metadata::ToolMetadata::sanitized_description_template(self),
         )
     }
@@ -345,10 +323,9 @@ impl xai_tool_runtime::Tool for UseTool {
 
         if !input.tool_name.contains("__") && gateway_source.is_none() {
             return Err(if is_native {
-                // Native tool wrongly routed through use_tool. Tell the model
-                // to call it directly. Strategy chosen via offline eval over
-                // real production failures:
-                // 2% doom-loop, 86% native recovery, 0 double-schedules.
+                // Native tool wrongly routed through use_tool. Tell the model to call it directly.
+                // Strategy chosen via offline eval over real production failures: 2% doom-loop, 86%
+                // native recovery, 0 double-schedules.
                 tracing::info!(
                     tool_name = %input.tool_name,
                     "use_tool: native tool detected, returning corrective error"
@@ -1440,10 +1417,9 @@ mod tests {
             files[0]
         );
 
-        // annotation: .json path + steer to query the file via the shell tool.
-        // (Which query tools are *named* depends on the host's $PATH, so assert
-        // only the deterministic parts here; tool-naming is covered by the
-        // presence-aware unit tests above.)
+        // annotation: .json path + steer to query the file via the shell tool. (Which query tools
+        // are *named* depends on the host's $PATH, so assert only the deterministic parts here;
+        // tool-naming is covered by the presence-aware unit tests above.)
         if let ToolOutput::MCP(mcp) = &result {
             if let MCPOutputDetails::OkayOutput(text) = mcp.output() {
                 assert!(text.contains("[MCP output truncated:"));

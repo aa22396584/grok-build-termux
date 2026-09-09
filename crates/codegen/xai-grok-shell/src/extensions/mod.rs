@@ -1,11 +1,15 @@
 pub mod auth;
 pub(crate) mod auth_gate;
 pub mod billing;
+pub(crate) mod btw;
 pub mod bundle;
 pub(crate) mod chat_conversation_history;
 pub mod code_nav;
+pub mod consent;
 pub mod debug;
 pub mod feedback;
+pub(crate) mod feedback_drafts;
+pub(crate) mod feedback_trace;
 pub mod fs;
 pub mod git;
 pub mod hooks;
@@ -23,6 +27,7 @@ pub mod prompt_history;
 pub mod prompt_meta;
 pub mod recap;
 pub mod repair;
+pub(crate) mod review;
 pub mod rewind;
 pub mod rollout;
 pub mod routing;
@@ -33,6 +38,7 @@ pub(crate) mod session_state;
 pub mod session_updates;
 pub mod share;
 pub mod skills;
+pub mod subagent_message;
 pub mod suggest;
 pub mod task;
 pub mod terminal;
@@ -47,14 +53,12 @@ pub type ExtResult = Result<acp::ExtResponse, acp::Error>;
 pub(crate) fn parse_params<T: DeserializeOwned>(args: &acp::ExtRequest) -> Result<T, acp::Error> {
     parse_params_str(args.params.get())
 }
-/// Deserialize ACP params from their raw JSON string, mapping a parse failure
-/// to `invalid_params`. Used by [`parse_params`] and the bridge `encode` hooks,
-/// which hold the params `RawValue` directly.
+/// Deserialize ACP params from their raw JSON string, mapping a parse failure to `invalid_params`.
+/// Used by [`parse_params`] and the bridge `encode` hooks, which hold the params `RawValue` directly.
 pub(crate) fn parse_params_str<T: DeserializeOwned>(raw: &str) -> Result<T, acp::Error> {
     serde_json::from_str(raw)
         .map_err(|e| acp::Error::invalid_params().data(format!("invalid params: {}", e)))
 }
-/// Extract the session ID from an extension request's params.
 pub fn parse_session_id(args: &acp::ExtRequest) -> Option<acp::SessionId> {
     let v: serde_json::Value = serde_json::from_str(args.params.get()).ok()?;
     let sid = v.get("sessionId")?.as_str()?;
@@ -71,7 +75,6 @@ pub(crate) fn to_raw_response<T: Serialize>(v: &T) -> ExtResult {
         .map(|raw| acp::ExtResponse::new(Arc::from(raw)))
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))
 }
-/// Convert a result with optional warning to an ExtResponse.
 pub(crate) fn to_ext_response_partial<T: Serialize>(
     result: anyhow::Result<T>,
     warning: Option<String>,

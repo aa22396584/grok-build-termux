@@ -1,5 +1,31 @@
 use super::*;
 use xai_grok_sampling_types::SyntheticReason;
+use xai_grok_sampling_types::{BackendToolCallItem, BackendToolKind, rs};
+#[test]
+fn summarization_prep_drops_backend_tool_calls() {
+    let items = vec![
+        ConversationItem::user("hi"),
+        ConversationItem::BackendToolCall(BackendToolCallItem {
+            kind: BackendToolKind::WebSearch(rs::WebSearchToolCall {
+                id: "ws_res-uuid_call-uuid-1".to_string(),
+                status: rs::WebSearchToolCallStatus::Completed,
+                action: rs::WebSearchToolCallAction::Search(rs::WebSearchActionSearch {
+                    query: "weather".to_string(),
+                    sources: None,
+                }),
+            }),
+        }),
+        ConversationItem::assistant("done"),
+    ];
+    let prepared = prepare_conversation_for_summarization(items);
+    assert!(
+        !prepared
+            .iter()
+            .any(|i| matches!(i, ConversationItem::BackendToolCall(_))),
+        "provider-minted native items must not reach the summarizer request"
+    );
+    assert_eq!(prepared.len(), 2);
+}
 #[test]
 fn compaction_attempt_serde_roundtrip_and_skips_none() {
     let attempt = CompactionAttempt {
@@ -101,21 +127,6 @@ fn test_extract_user_query_ignores_nested_rules_query_before_outer_query() {
          </always_applied_workspace_rules></rules>\n\n\
          <user_query>real request</user_query>";
     assert_eq!(extract_user_query(input), "real request");
-}
-#[test]
-fn test_strip_fork_context_tag() {
-    let input = "<fork-context>\nYou inherited context.\n</fork-context>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
-}
-#[test]
-fn test_strip_system_reminder_tag() {
-    let input = "<system-reminder>\nFollow these instructions.\n</system-reminder>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
-}
-#[test]
-fn test_strip_agent_memory_tag() {
-    let input = "<agent-memory>\nPrevious context.\n</agent-memory>\n\nreal content";
-    assert_eq!(extract_user_query(input), "real content");
 }
 #[test]
 fn test_strip_system_underscore_reminder_tag() {
@@ -569,6 +580,231 @@ fn extract_messages_since_last_real_user_fallback_no_real_user() {
     let msgs = extract_messages_since_last_real_user(&conv);
     assert_eq!(msgs.len(), 1);
 }
+#[test]
+fn agent_message_projection_uses_generic_label_and_preserves_image_only_payload() {
+    let agent_message = ConversationItem::agent_message("");
+    let ConversationItem::User(mut image_only) = agent_message else {
+        panic!("agent_message must construct a user item");
+    };
+    image_only.content = vec![ContentPart::Image {
+        url: "data:image/png;base64,abc".into(),
+    }];
+    let raw = ConversationItem::User(image_only);
+    let prepared = ModelRequestHistory::from_raw(vec![raw]);
+    let projected = prepared.into_items();
+    let ConversationItem::User(user) = &projected[0] else {
+        panic!("projected agent message must stay a user item");
+    };
+    assert!(matches!(
+        user.content.as_slice(),
+        [ContentPart::Text { text }, ContentPart::Image { url }]
+            if text.as_ref() == AGENT_MESSAGE_MODEL_LABEL
+                && url.as_ref() == "data:image/png;base64,abc"
+    ));
+}
+fn agent_message_anchors(items: &[ConversationItem]) -> Vec<&ConversationItem> {
+    items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item,
+                ConversationItem::User(user)
+                    if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+            )
+        })
+        .collect()
+}
+#[tokio::test]
+async fn agent_message_anchor_survives_two_compactions_with_raw_content_unchanged() {
+    let raw_agent_message = "model-authored message from another agent";
+    let conversation = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::user("<user_query>human task</user_query>"),
+        ConversationItem::assistant("before agent message"),
+        ConversationItem::agent_message(raw_agent_message),
+        ConversationItem::notification_drain("runtime wake"),
+        ConversationItem::task_completed("task wake"),
+        ConversationItem::assistant("working tail"),
+        ConversationItem::tool_result("tc1", "tool output"),
+    ];
+    let raw_agent_message_bytes = serde_json::to_vec(&conversation[3]).unwrap();
+    async fn compact_once(conversation: &[ConversationItem]) -> Vec<ConversationItem> {
+        let state_context =
+            CompactionStateContext::build(conversation, CompactionInputs::default())
+                .await
+                .for_compaction();
+        assert!(state_context.recent_messages.is_empty());
+        build_compacted_history(CompactedHistoryInput {
+            system_message: ConversationItem::system("sys"),
+            user_message_prefix: "prefix".into(),
+            agents_md_reminder: None,
+            state_context: &state_context,
+            compaction_summary: "summary".into(),
+            system_reminder: None,
+            summary_before_recent: false,
+            transcript_hint: None,
+            summary_count: 1,
+        })
+    }
+    let compacted_once = compact_once(&conversation).await;
+    assert!(matches!(
+        &compacted_once[2],
+        ConversationItem::User(user)
+            if user.synthetic_reason.is_none()
+                && compacted_once[2].text_content()
+                    == "<user_query>\nhuman task\n</user_query>"
+    ));
+    assert!(matches!(
+        &compacted_once[3],
+        ConversationItem::User(user)
+            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                && compacted_once[3].text_content() == raw_agent_message
+    ));
+    let compacted_once_anchors = agent_message_anchors(&compacted_once);
+    assert_eq!(compacted_once_anchors.len(), 1);
+    assert_eq!(
+        serde_json::to_vec(compacted_once_anchors[0]).unwrap(),
+        raw_agent_message_bytes
+    );
+    let compacted_twice = compact_once(&compacted_once).await;
+    assert!(matches!(
+        &compacted_twice[2],
+        ConversationItem::User(user)
+            if user.synthetic_reason.is_none()
+                && compacted_twice[2].text_content()
+                    == "<user_query>\nhuman task\n</user_query>"
+    ));
+    assert!(matches!(
+        &compacted_twice[3],
+        ConversationItem::User(user)
+            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                && compacted_twice[3].text_content() == raw_agent_message
+    ));
+    let compacted_twice_anchors = agent_message_anchors(&compacted_twice);
+    assert_eq!(compacted_twice_anchors.len(), 1);
+    assert_eq!(compacted_twice_anchors[0].text_content(), raw_agent_message);
+    assert_eq!(
+        serde_json::to_vec(compacted_twice_anchors[0]).unwrap(),
+        raw_agent_message_bytes
+    );
+    assert!(!compacted_twice.iter().any(|item| {
+        matches!(
+            item,
+            ConversationItem::Assistant(_) | ConversationItem::ToolResult(_)
+        )
+    }));
+    assert!(!compacted_twice.iter().any(|item| {
+        matches!(
+            item,
+            ConversationItem::User(user)
+                if matches!(
+                    user.synthetic_reason,
+                    Some(SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted)
+                )
+        )
+    }));
+    assert_eq!(extract_real_user_queries(&conversation), vec!["human task"]);
+    let agent_only = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::agent_message(raw_agent_message),
+    ];
+    let agent_only_context =
+        CompactionStateContext::build(&agent_only, CompactionInputs::default()).await;
+    assert!(agent_only_context.last_user_query.is_none());
+    let agent_only_compacted = build_compacted_history(CompactedHistoryInput {
+        system_message: ConversationItem::system("sys"),
+        user_message_prefix: "prefix".into(),
+        agents_md_reminder: None,
+        state_context: &agent_only_context,
+        compaction_summary: "summary".into(),
+        system_reminder: None,
+        summary_before_recent: false,
+        transcript_hint: None,
+        summary_count: 1,
+    });
+    assert_eq!(agent_message_anchors(&agent_only_compacted).len(), 1);
+}
+#[tokio::test]
+async fn agent_message_before_latest_human_survives_compaction_exactly_once() {
+    let raw_agent_message = "generic assignment from another agent";
+    let conversation = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::agent_message(raw_agent_message),
+        ConversationItem::notification_drain("runtime wake"),
+        ConversationItem::task_completed("task wake"),
+        ConversationItem::user("<user_query>latest human query</user_query>"),
+        ConversationItem::assistant("working tail"),
+    ];
+    let raw_agent_message_bytes = serde_json::to_vec(&conversation[1]).unwrap();
+    let state_context = CompactionStateContext::build(&conversation, CompactionInputs::default())
+        .await
+        .for_compaction();
+    assert_eq!(
+        state_context.last_user_query.as_deref(),
+        Some("latest human query")
+    );
+    assert!(state_context.recent_messages.is_empty());
+    let compacted = build_compacted_history(CompactedHistoryInput {
+        system_message: ConversationItem::system("sys"),
+        user_message_prefix: "prefix".into(),
+        agents_md_reminder: None,
+        state_context: &state_context,
+        compaction_summary: "summary".into(),
+        system_reminder: None,
+        summary_before_recent: false,
+        transcript_hint: None,
+        summary_count: 1,
+    });
+    assert!(matches!(
+        &compacted[2],
+        ConversationItem::User(user)
+            if user.synthetic_reason == Some(SyntheticReason::AgentMessage)
+                && compacted[2].text_content() == raw_agent_message
+    ));
+    assert!(matches!(
+        &compacted[3],
+        ConversationItem::User(user)
+            if user.synthetic_reason.is_none()
+                && compacted[3].text_content()
+                    == "<user_query>\nlatest human query\n</user_query>"
+    ));
+    let compacted_anchors = agent_message_anchors(&compacted);
+    assert_eq!(compacted_anchors.len(), 1);
+    assert_eq!(compacted_anchors[0].text_content(), raw_agent_message);
+    assert_eq!(
+        serde_json::to_vec(compacted_anchors[0]).unwrap(),
+        raw_agent_message_bytes
+    );
+    assert!(!compacted.iter().any(|item| {
+        matches!(
+            item,
+            ConversationItem::User(user)
+                if matches!(
+                    user.synthetic_reason,
+                    Some(SyntheticReason::NotificationDrain | SyntheticReason::TaskCompleted)
+                )
+        )
+    }));
+    let human_only = vec![
+        ConversationItem::system("sys"),
+        ConversationItem::user("<user_query>latest human query</user_query>"),
+    ];
+    let human_only_context =
+        CompactionStateContext::build(&human_only, CompactionInputs::default()).await;
+    assert!(human_only_context.agent_message_anchor.is_none());
+    let human_only_compacted = build_compacted_history(CompactedHistoryInput {
+        system_message: ConversationItem::system("sys"),
+        user_message_prefix: "prefix".into(),
+        agents_md_reminder: None,
+        state_context: &human_only_context,
+        compaction_summary: "summary".into(),
+        system_reminder: None,
+        summary_before_recent: false,
+        transcript_hint: None,
+        summary_count: 1,
+    });
+    assert!(agent_message_anchors(&human_only_compacted).is_empty());
+}
 #[tokio::test]
 async fn compaction_state_context_build_uses_real_user_and_real_tail() {
     use xai_grok_sampling_types::ToolCall;
@@ -716,12 +952,49 @@ async fn build_stores_and_for_compaction_preserves_todos() {
     );
     assert_eq!(compacted.todos[1].content, "do the other thing");
 }
-/// The compaction view drops the working transcript (`recent_messages`)
-/// while preserving the last real user query and all other live state.
-/// Built from a sub-agent-shaped conversation (ONE real user turn followed
-/// by assistant/tool turns) so the dropped tail is genuinely non-empty AND
-/// contains tool results — i.e. this would NOT pass if `for_compaction` were
-/// a no-op.
+#[tokio::test]
+async fn build_stores_and_for_compaction_preserves_loops_and_workflows() {
+    let conversation = vec![
+        ConversationItem::user("<user_query>\ntask\n</user_query>"),
+        ConversationItem::assistant("working"),
+    ];
+    let ctx = CompactionStateContext::build(
+        &conversation,
+        CompactionInputs {
+            scheduled_loops: vec![ScheduledLoopSummary {
+                task_id: "loop-1".into(),
+                interval: "every 5 minutes".into(),
+                next_fire_at: "2026-08-29T00:00:00Z".into(),
+                prompt: "check CI".into(),
+                recurring: true,
+                durable: false,
+            }],
+            workflows: vec![WorkflowRunSummary {
+                name: "review-changes".into(),
+                run_id: "wf-1".into(),
+                status: "active".into(),
+                objective: "review".into(),
+                current_phase: Some("Plan".into()),
+                agents_used: 1,
+                agent_budget: Some(8),
+                elapsed_ms: 4_000,
+            }],
+            workflow_tool_name: Some("workflow".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(ctx.scheduled_loops[0].task_id, "loop-1");
+    assert_eq!(ctx.workflows[0].run_id, "wf-1");
+    let compacted = ctx.for_compaction();
+    assert!(compacted.recent_messages.is_empty());
+    assert_eq!(compacted.scheduled_loops.len(), 1);
+    assert_eq!(compacted.workflows[0].name, "review-changes");
+    assert_eq!(compacted.workflow_tool_name.as_deref(), Some("workflow"));
+}
+/// The compaction view drops the working transcript while preserving the last real user query.
+/// Built from a single-real-user-turn conversation so the dropped tail is non-empty with tool results —
+/// this would fail if `for_compaction` were a no-op.
 #[tokio::test]
 async fn for_compaction_drops_recent_messages_preserves_query() {
     use xai_grok_sampling_types::ToolCall;
@@ -777,6 +1050,7 @@ async fn for_compaction_drops_recent_messages_preserves_query() {
         compacted.recent_messages.is_empty(),
         "for_compaction must drop the entire working transcript"
     );
+    assert!(compacted.agent_message_anchor.is_none());
     assert_eq!(
         compacted.last_user_query,
         Some("implement feature X".to_string())
@@ -1349,10 +1623,8 @@ fn repair_history_strips_orphaned_tool_results() {
     assert_eq!(report.synthetic_results_inserted, 0);
     assert_eq!(items.len(), 4);
 }
-/// A result displaced past a user turn has a matching id *somewhere
-/// before*, so the compaction sanitizer would keep it — but providers
-/// require adjacency, so repair must strip it and synthesize a result
-/// for the now-unanswered call.
+/// A result displaced past a user turn may have a matching id somewhere before, so sanitizer would keep it.
+/// Providers require adjacency, so repair must strip it and synthesize a result for the unanswered call.
 #[test]
 fn repair_history_strips_displaced_result_and_backfills_call() {
     let mut items = vec![
@@ -1647,16 +1919,7 @@ async fn build_compacted_history_transcript_hint() {
     assert!(!summary.contains("transcript"));
 }
 /// Full multi-turn conversation with parallel tool calls, then compaction.
-///
-/// Simulates the exact conversation shape produced by xai-grok-shell:
-///
-/// Turn 1: user_query → assistant(2 tool calls) → 2 tool results
-/// Turn 2: user_query → assistant(2 tool calls) → 2 tool results
-/// → compaction fires
-///
-/// Verifies the exact structure and content of the compacted output,
-/// including how `<user_query>` tags appear and how tool calls/results
-/// are preserved or omitted.
+/// Locks the compacted output shape, including which tool calls/results are preserved.
 #[tokio::test]
 async fn build_compacted_history_multi_turn_with_parallel_tool_calls() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall};
@@ -1864,6 +2127,7 @@ fn generation_zero_compaction_keeps_legacy_project_instructions() {
     let state_context = CompactionStateContext {
         cwd_generation: 0,
         destination_project_instructions: Some("destination rules".into()),
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: None,
         agent_edited_paths: vec![],
@@ -1871,6 +2135,9 @@ fn generation_zero_compaction_keeps_legacy_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -1890,6 +2157,7 @@ fn relocated_compaction_uses_destination_project_instructions() {
     let state_context = CompactionStateContext {
         cwd_generation: 1,
         destination_project_instructions: Some("destination rules".into()),
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: None,
         agent_edited_paths: vec![],
@@ -1897,6 +2165,9 @@ fn relocated_compaction_uses_destination_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -1916,6 +2187,7 @@ fn relocated_compaction_does_not_restore_source_instructions_when_destination_ha
     let state_context = CompactionStateContext {
         cwd_generation: 1,
         destination_project_instructions: None,
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: None,
         agent_edited_paths: vec![],
@@ -1923,6 +2195,9 @@ fn relocated_compaction_does_not_restore_source_instructions_when_destination_ha
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -1945,6 +2220,7 @@ fn build_compacted_history_tags_agents_md_with_project_instructions() {
     let state_context = CompactionStateContext {
         cwd_generation: 0,
         destination_project_instructions: None,
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: None,
         agent_edited_paths: vec![],
@@ -1952,6 +2228,9 @@ fn build_compacted_history_tags_agents_md_with_project_instructions() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let reminder = "some AGENTS.md body".to_string();
     let compacted = build_compacted_history(CompactedHistoryInput {
@@ -1988,6 +2267,7 @@ fn build_compacted_history_omits_agents_md_when_none() {
     let state_context = CompactionStateContext {
         cwd_generation: 0,
         destination_project_instructions: None,
+        agent_message_anchor: None,
         recent_messages: vec![],
         last_user_query: None,
         agent_edited_paths: vec![],
@@ -1995,6 +2275,9 @@ fn build_compacted_history_omits_agents_md_when_none() {
         running_subagents: vec![],
         connected_mcp_servers: vec![],
         todos: vec![],
+        scheduled_loops: vec![],
+        workflows: vec![],
+        workflow_tool_name: None,
     };
     let compacted = build_compacted_history(CompactedHistoryInput {
         system_message: ConversationItem::system("sys"),
@@ -2035,10 +2318,8 @@ fn conversation_item_drops_tool_results() {
             .any(|m| matches!(m, ConversationItem::ToolResult(_)))
     );
 }
-/// Load-bearing: documents the intentional contract that
-/// `strip_tool_messages_for_conversation_item` does NOT touch sibling
-/// `Reasoning` items. `prepare_conversation_for_summarization` composes
-/// against this guarantee by chaining `strip_reasoning_blocks` after.
+/// Load-bearing: `strip_tool_messages_for_conversation_item` does NOT touch sibling `Reasoning` items.
+/// `prepare_conversation_for_summarization` chains `strip_reasoning_blocks` after this.
 #[test]
 fn conversation_item_preserves_reasoning_siblings() {
     use xai_grok_sampling_types::{AssistantItem, rs};
@@ -2098,11 +2379,8 @@ fn strip_reasoning_blocks_passes_other_items_through() {
     assert!(matches!(result[1], ConversationItem::User(_)));
     assert!(matches!(result[2], ConversationItem::ToolResult(_)));
 }
-/// Reproduces the production failure that prompted this helper: an
-/// assistant turn with both signed `reasoning` and `tool_calls` triggers a
-/// provider "thinking blocks cannot be modified" 400 because the strip
-/// mutates the surrounding text. After `prepare_conversation_for_summarization`
-/// the message must have no `reasoning` left for the provider to validate.
+/// Reproduces the production 400: signed `reasoning` plus `tool_calls` fails after text mutation.
+/// After `prepare_conversation_for_summarization` no `reasoning` may remain for the provider to validate.
 #[test]
 fn prepare_for_summarization_drops_reasoning_sibling_on_mutated_assistant() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
@@ -2269,10 +2547,8 @@ fn prepare_for_summarization_handles_multi_assistant_mixed_conversation() {
         assistants[2].content
     );
 }
-/// Calling `prepare_conversation_for_summarization` twice must produce
-/// the same result as calling it once. Guarantees the transformation
-/// has no hidden state and is safe to apply defensively at multiple
-/// layers (e.g. memory flush + compaction both routing through it).
+/// Calling `prepare_conversation_for_summarization` twice must match calling it once.
+/// The transform is stateless and safe to apply defensively at multiple layers.
 #[test]
 fn prepare_for_summarization_is_idempotent() {
     use xai_grok_sampling_types::{AssistantItem, ToolCall, rs};
