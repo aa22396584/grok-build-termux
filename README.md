@@ -57,19 +57,20 @@ pkg install -y grok-build
 
 ### Method 2: Prebuilt Binary (GitHub Releases)
 
-Download the native `aarch64-linux-android` release binary directly:
+Use the installer. It detects `aarch64` or `x86_64`, downloads the matching tarball from [GitHub Releases](https://github.com/ImL1s/grok-build-termux/releases/latest), verifies `SHA256SUMS.txt`, and installs into `$PREFIX/bin/grok`.
 
 ```sh
-# Download latest release binary
-curl -fsSL -o "$PREFIX/bin/grok" \
-  https://github.com/ImL1s/grok-build-termux/releases/latest/download/xai-grok-pager-aarch64-linux-android
+# Latest release
+curl -fsSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
 
-# Grant executable permissions
-chmod +x "$PREFIX/bin/grok"
+# Pin a version
+VERSION=v1.0.24 curl -fsSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
 
-# Verify installation
+# Verify
 grok --version
 ```
+
+Release assets are named `grok-build-termux-<tag>-<aarch64|x86_64>-linux-android.tar.gz` plus `SHA256SUMS.txt`.
 
 ---
 
