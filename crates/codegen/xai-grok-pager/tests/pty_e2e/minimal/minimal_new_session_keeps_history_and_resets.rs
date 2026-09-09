@@ -2,16 +2,9 @@
 #[allow(unused_imports)]
 use crate::common::*;
 
-/// `/new` in minimal mode starts a fresh session — it commits a
-/// second welcome card and resets the committed frontier — while leaving the
-/// prior turn's committed lines in the terminal's native scrollback (we cannot,
-/// and must not, un-print them). After `/new` a fresh turn streams normally.
-///
-/// The first turn is genuinely taller than the screen (a fenced code block, not
-/// reflowable prose) so the first welcome card and the turn's head scroll into
-/// *native scrollback* before `/new`. The robust "new session" signal is then
-/// that a *second* welcome card appears (two `Grok Build` banners in
-/// scrollback+screen), independent of exactly how content scrolled.
+/// The prior turn's committed lines stay in the terminal's native scrollback (we cannot, and must
+/// not, un-print them). The first welcome card and the turn's head therefore scroll into native
+/// scrollback before `/new`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn minimal_new_session_keeps_history_and_resets() {
@@ -19,9 +12,8 @@ async fn minimal_new_session_keeps_history_and_resets() {
     const WELCOME_BANNER: &str = "Grok Build";
 
     let content = ContentController::start().await.expect("start content");
-    // Code-block rows (not prose, which markdown-reflows to fit on screen) so
-    // turn 1 is genuinely taller than the screen and its head commits into
-    // native scrollback before `/new` — see `tall_response`.
+    // Code-block rows (not prose, which markdown-reflows to fit on screen) so turn 1 is genuinely taller than the screen
+    // Its head then commits into native scrollback before `/new`; see `tall_response`
     content.set_response(tall_response(&turn_sentinel(1), 80));
 
     let mut harness = spawn_minimal(&content);
@@ -30,9 +22,8 @@ async fn minimal_new_session_keeps_history_and_resets() {
         .inject_keys(format!("{PROMPT}\r").as_bytes())
         .expect("submit turn 1");
 
-    // Wait until turn 1's head has committed into *native scrollback* (above the
-    // viewport). The first welcome card was printed before it, so it is in
-    // scrollback too by this point.
+    // Wait until turn 1's head has committed into *native scrollback* (above the viewport)
+    // The first welcome card was printed before it, so it is in scrollback too by this point
     let deadline = Instant::now() + Duration::from_secs(40);
     while Instant::now() < deadline && !harness.scrollback_text().contains(&turn_sentinel(1)) {
         harness.update(Duration::from_millis(100));
@@ -43,12 +34,11 @@ async fn minimal_new_session_keeps_history_and_resets() {
         harness.scrollback_text()
     );
 
-    // `/new` → fresh session: commits a second welcome card and resets the frontier.
+    // `/new` starts a fresh session: commits a second welcome card and resets the frontier
     inject_keys_paced(&mut harness, b"/new");
     harness.inject_keys(b"\r").expect("submit /new");
 
-    // The "new session" signal: a *second* welcome banner now exists across
-    // scrollback + screen (the first is preserved in native scrollback).
+    // The "new session" signal: a *second* welcome banner now exists across scrollback and screen (the first is preserved in native scrollback)
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && harness.full_text().matches(WELCOME_BANNER).count() < 2 {
         harness.update(Duration::from_millis(100));

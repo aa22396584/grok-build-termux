@@ -250,7 +250,7 @@ impl From<&RuntimeFact<ColorLevel>> for JsonColorLevel {
         match fact {
             RuntimeFact::Available(level) => Self {
                 status: "available",
-                value: Some(level.as_str()),
+                value: Some((*level).into()),
             },
             RuntimeFact::NoReply => Self {
                 status: "no_reply",

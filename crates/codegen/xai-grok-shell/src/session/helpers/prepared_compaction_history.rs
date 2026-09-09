@@ -1,5 +1,6 @@
 //! Prepares one cache-aligned, image-budgeted compaction request history.
 
+use xai_chat_state::compaction_utils::ModelRequestHistory;
 use xai_chat_state::image_budget::{
     IMAGE_COMPACT_RECLAIM_TARGET_BYTES, IMAGE_COMPACT_TRIGGER_BYTES, ImageBudgetOutcome,
     apply_image_budget_with_limits,
@@ -10,13 +11,13 @@ use super::session_compact::build_compaction_prompt;
 
 /// The exact owned history sent by a compaction attempt and persisted in its artifact.
 pub(crate) struct PreparedCompactionHistory {
-    /// Prompt-terminated items after the single image-budget transformation.
+    /// Items ending with the summarization prompt, after the one image-budget transformation.
     pub(crate) items: Vec<ConversationItem>,
     /// Exact accounting for the transformation applied to `items`.
     pub(crate) image_budget: ImageBudgetOutcome,
 }
 
-/// Raw direct-call history or history already transformed by the prompt builder.
+/// Raw direct-call history or history already fully transformed for sampling.
 pub(crate) enum CompactionHistoryInput {
     Raw(Vec<ConversationItem>),
     Prepared(PreparedCompactionHistory),
@@ -62,6 +63,7 @@ fn prepare_items(
 ) -> PreparedCompactionHistory {
     let (trigger_bytes, reclaim_target_bytes) =
         effective_image_budget_limits(compaction_tool_tokens);
+    let items = ModelRequestHistory::from_raw(items).into_items();
     let budgeted = apply_image_budget_with_limits(items, trigger_bytes, reclaim_target_bytes);
     PreparedCompactionHistory {
         items: budgeted.items,

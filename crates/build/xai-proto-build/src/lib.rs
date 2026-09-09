@@ -37,6 +37,7 @@ pub struct XaiProtoBuilder {
     gen_pbjson: bool,
     pbjson_ignore_unknown_fields: bool,
     pbjson_preserve_proto_field_names: bool,
+    pbjson_exclude: Vec<String>,
     honor_debug_redact: bool,
 }
 
@@ -57,6 +58,10 @@ impl XaiProtoBuilder {
 
     pub fn bytes<S: AsRef<str>>(self, paths: impl IntoIterator<Item = S>) -> Self {
         self.map_builder(|b| paths.into_iter().fold(b, |b, path| b.bytes(path)))
+    }
+
+    pub fn boxed(self, path: impl AsRef<str>) -> Self {
+        self.map_builder(|b| b.boxed(path))
     }
 
     pub fn extern_path(self, proto_path: impl AsRef<str>, rust_path: impl AsRef<str>) -> Self {
@@ -84,6 +89,21 @@ impl XaiProtoBuilder {
     /// camelCase documents.
     pub fn pbjson_preserve_proto_field_names(mut self) -> Self {
         self.pbjson_preserve_proto_field_names = true;
+        self
+    }
+
+    /// Skip pbjson serde generation for these fully-qualified proto type
+    /// prefixes (e.g. `.model_config.RateLimit`). Use when a type is
+    /// `extern_path`'d into another crate that already provides its pbjson serde
+    /// impls, but the enclosing package's serde is still generated here —
+    /// otherwise pbjson would emit an orphan `impl Serialize for <foreign type>`.
+    /// Matching is segment-based, so `.pkg.Foo` does not match `.pkg.FooBar`.
+    pub fn pbjson_exclude<S: Into<String>>(
+        mut self,
+        prefixes: impl IntoIterator<Item = S>,
+    ) -> Self {
+        self.pbjson_exclude
+            .extend(prefixes.into_iter().map(Into::into));
         self
     }
 
@@ -128,9 +148,38 @@ impl XaiProtoBuilder {
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
-            command
-                .arg("--dependency_out=/dev/stdout")
-                .arg("--descriptor_set_out=/dev/null");
+            // Unix protoc can emit deps on stdout; Windows has no /dev/stdout, so use temp files.
+            let dep_path;
+            #[cfg(windows)]
+            let desc_path: PathBuf;
+            #[cfg(windows)]
+            {
+                let proto_tag = proto
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("proto")
+                    .replace(['\\', '/', ':'], "_");
+                dep_path = std::env::temp_dir().join(format!(
+                    "xai-proto-deps-{}-{}.d",
+                    std::process::id(),
+                    proto_tag
+                ));
+                desc_path = std::env::temp_dir().join(format!(
+                    "xai-proto-desc-{}-{}.pb",
+                    std::process::id(),
+                    proto_tag
+                ));
+                command
+                    .arg(format!("--dependency_out={}", dep_path.display()))
+                    .arg(format!("--descriptor_set_out={}", desc_path.display()));
+            }
+            #[cfg(not(windows))]
+            {
+                dep_path = PathBuf::from("/dev/stdout");
+                command
+                    .arg("--dependency_out=/dev/stdout")
+                    .arg("--descriptor_set_out=/dev/null");
+            }
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -156,22 +205,53 @@ impl XaiProtoBuilder {
                 return Err(anyhow::anyhow!("protoc command failed"));
             }
 
+            #[cfg(windows)]
+            let output = fs::read_to_string(&dep_path).with_context(|| {
+                format!("failed to read protoc dependency file {}", dep_path.display())
+            })?;
+            #[cfg(not(windows))]
             let output =
                 String::from_utf8(output.stdout).context("protoc command output not UTF-8")?;
 
             let mut lines = output.lines();
             let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = "/dev/null:";
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
+            let rem = {
+                #[cfg(windows)]
+                {
+                    let display = desc_path.display().to_string();
+                    let posix = display.replace('\\', "/");
+                    first_line
+                        .strip_prefix(&format!("{display}:"))
+                        .or_else(|| first_line.strip_prefix(&format!("{posix}:")))
+                        .or_else(|| first_line.strip_prefix("NUL:"))
+                        .or_else(|| first_line.strip_prefix("nul:"))
+                        .or_else(|| {
+                            desc_path.file_name().and_then(|n| n.to_str()).and_then(|name| {
+                                first_line.split_once(&format!("{name}:")).map(|(_, rest)| rest)
+                            })
+                        })
+                }
+                #[cfg(not(windows))]
+                {
+                    first_line
+                        .strip_prefix("/dev/null:")
+                        .or_else(|| first_line.split_once(':').map(|(_, rest)| rest))
+                }
+            }
+            .with_context(|| {
+                format!("protoc command output must start with descriptor path: {output:?}")
             })?;
             for line in iter::once(rem).chain(lines) {
                 let line = line.trim();
-                let line = line.strip_suffix("\\").unwrap_or(line);
+                let line = line.strip_suffix('\\').unwrap_or(line).trim();
+                if line.is_empty() {
+                    continue;
+                }
                 // Depending on absolute paths like
                 // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
                 // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/") {
+                let normalized = line.replace('\\', "/");
+                if normalized.contains("/include/google/protobuf/") {
                     continue;
                 }
 
@@ -207,6 +287,7 @@ impl XaiProtoBuilder {
             file_descriptor_set_path,
             pbjson_ignore_unknown_fields,
             pbjson_preserve_proto_field_names,
+            pbjson_exclude,
             honor_debug_redact,
         } = self;
         let mut config = prost_build::Config::new();
@@ -302,6 +383,9 @@ impl XaiProtoBuilder {
             if pbjson_preserve_proto_field_names {
                 builder.preserve_proto_field_names();
             }
+            if !pbjson_exclude.is_empty() {
+                builder.exclude(pbjson_exclude);
+            }
             builder
                 .build(&["."])
                 .context("Failed to build descriptor set")?;
@@ -322,6 +406,7 @@ pub fn configure() -> XaiProtoBuilder {
         gen_pbjson: false,
         pbjson_ignore_unknown_fields: false,
         pbjson_preserve_proto_field_names: false,
+        pbjson_exclude: Vec::new(),
         file_descriptor_set_path: None,
         honor_debug_redact: false,
     }

@@ -1,7 +1,7 @@
 # Project: Native Android/Termux Port of Grok Build
 
 ## Architecture
-The native Android/Termux port of Grok Build (`grok-build-termux`) targets `aarch64-linux-android` (with Bionic libc) tracking upstream `xai-org/grok-build@eb267feff13129e568df38fb6fdf0ceb65f735d6`. It establishes a clean modular architecture:
+The native Android/Termux port of Grok Build (`grok-build-termux`) targets `aarch64-linux-android` (with Bionic libc) tracking upstream `xai-org/grok-build@75810042ca2762aa0b0fa17864f3f68823ccbea5` (`SOURCE_REV` `eb4a894da8fb7bcd8d8f398a9d909a7868a4fcf1`). It establishes a clean modular architecture:
 1. **Platform Capability Layer (`xai-grok-platform` / `PlatformCapabilities`)**: Central injectable source of truth for runtime environment detection (Termux vs Desktop, dynamic `$PREFIX`, lack of display server, audio gating, policy-only sandboxing).
 2. **Build & Toolchain Configuration**: Android NDK (r28b, API 24) toolchain with explicit 16 KiB ELF page-size alignment (`-Wl,-z,max-page-size=16384`) and Bionic dynamic linker (`/system/bin/linker64`).
 3. **Filesystem & Storage Boundary Enforcement**: Dynamic resolution of `$PREFIX/etc/grok`, `$HOME/.grok`, `$TMPDIR` (<108-byte sockets), and strict quarantine refusing credentials on Android shared storage (`/sdcard`, `/storage/emulated/0`).

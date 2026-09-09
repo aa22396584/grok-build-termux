@@ -316,7 +316,7 @@ cp target/release/xai-grok-pager "$PREFIX/bin/grok"
 
 This repository actively tracks the upstream [`xai-org/grok-build`](https://github.com/xai-org/grok-build) monorepo.
 
-- **Source Tracking**: The `SOURCE_REV` file at the repository root contains the exact upstream monorepo commit SHA (`e6a67a5408288c98380cd13f3b1fe1fbc01c9f1f`).
+- **Source Tracking**: The `SOURCE_REV` file at the repository root contains the exact upstream monorepo commit SHA (`eb4a894da8fb7bcd8d8f398a9d909a7868a4fcf1`), corresponding to [`xai-org/grok-build@75810042`](https://github.com/xai-org/grok-build/commit/75810042ca2762aa0b0fa17864f3f68823ccbea5).
 - **Low-Conflict Patch Architecture**: Downstream modifications are organized in isolated modular layers (`crates/codegen/xai-grok-config`, `xai-grok-shared`, `xai-grok-sandbox`, `xai-grok-tools`, `xai-grok-update`) to minimize merge conflicts during upstream rebases.
 - **Sync Workflow**: Periodic upstream snapshots are synchronized to a dedicated tracking branch and merged into `termux-native` via reviewable Pull Requests.
 

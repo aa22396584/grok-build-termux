@@ -29,11 +29,9 @@ use crate::types::tool::{ToolKind, ToolNamespace};
 /// Default Imagine model for `image_gen`. Used unless an explicit
 /// `model_override` is supplied via `ImageGenConfig::Enabled`.
 const XAI_IMAGINE_MODEL: &str = "grok-imagine-image-quality";
-// Some Imagine models (e.g. `grok-imagine-image`, selectable via `model_override`)
-// expand the prompt then generate, and the proxy buffers
-// the whole image before sending any bytes — so the client may receive nothing
-// for well over a minute. Keep these generous so a slow-but-progressing
-// generation isn't cut off.
+// Some Imagine models (e.g. `grok-imagine-image`, selectable via `model_override`) expand the prompt then generate,
+// and the proxy buffers the whole image before sending any bytes — so the client may receive nothing for well over a
+// minute. Keep these generous so a slow-but-progressing generation isn't cut off.
 const IMAGE_GEN_TIMEOUT_SECS: u64 = 300;
 const IMAGE_GEN_READ_TIMEOUT_SECS: u64 = 240;
 const DEFAULT_IMAGE_DIR: &str = "images";
@@ -42,10 +40,9 @@ pub use xai_grok_tools_api::slash_commands::{
     IMAGE_GEN_TOOL_NAME, IMAGINE_COMMAND_NAME, imagine_instruction, imagine_usage_message,
 };
 
-/// Prose returned to the model (as a normal, successful tool result) when a
-/// free / X Basic user calls `image_gen` or `image_edit`. The model relays it
-/// to the user. The deliberate `/imagine` slash command shows the richer
-/// SuperGrok upsell modal instead; this covers the natural-language path.
+/// Prose returned to the model (as a normal, successful tool result) when a free / X Basic user calls `image_gen` or
+/// `image_edit`. The model relays it to the user. The deliberate `/imagine` slash command shows the richer SuperGrok
+/// upsell modal instead; this covers the natural-language path.
 pub(crate) const TIER_RESTRICTED_UPSELL: &str = "Image generation is a SuperGrok feature and isn't available on the free or X Basic tier. Let the user know they can unlock image and video generation by upgrading to SuperGrok: https://grok.com/supergrok?referrer=grok-build. Do not retry this tool.";
 
 /// HTTP client for xAI Imagine API. Cloned per-request; shares `Arc` state.
@@ -53,10 +50,9 @@ pub(crate) const TIER_RESTRICTED_UPSELL: &str = "Image generation is a SuperGrok
 pub struct ImageGenClient {
     http: reqwest::Client,
     base_url: String,
-    /// Imagine model slug used by `generate()`. Selected at construction
-    /// from `ImageGenConfig::model_override` (falling back to
-    /// [`XAI_IMAGINE_MODEL`]). `image_edit` uses its own model and is
-    /// unaffected.
+    /// Imagine model slug used by `generate()`. Selected at construction from
+    /// `ImageGenConfig::model_override` (falling back to [`XAI_IMAGINE_MODEL`]). `image_edit` uses
+    /// its own model and is unaffected.
     model: String,
     edit_model: String,
     writer: super::storage::SessionFileWriter,
@@ -65,11 +61,14 @@ pub struct ImageGenClient {
     /// Imagine API emits an `auth_401_attribution` event with
     /// `consumer == "ImageGen"` for unified auth-failure telemetry.
     attribution_callback: Option<SharedAttributionCallback>,
-    /// When `true`, the user is on a tier the Imagine server zero-limits
-    /// (free / X Basic). `image_gen` / `image_edit` short-circuit before any
-    /// HTTP call and return the SuperGrok upsell prose instead. See
-    /// [`ImageGenClient::is_tier_restricted`].
+    /// When `true`, the user is on a tier the Imagine server zero-limits (free / X Basic).
+    /// `image_gen` / `image_edit` short-circuit before any HTTP call and return the SuperGrok
+    /// upsell prose instead. See [`ImageGenClient::is_tier_restricted`].
     tier_restricted: bool,
+    /// Per-request [`SESSION_ID_HEADER`]; kept off `default_headers` so the
+    /// transport stays session-independent and cacheable.
+    session_header: Option<HeaderValue>,
+    defaults_have_session_header: bool,
 }
 
 impl ImageGenClient {
@@ -129,13 +128,18 @@ impl ImageGenClient {
             Ok::<(), xai_tool_runtime::ToolError>(())
         })?;
 
-        let http = xai_grok_extra_ca::with_extra_root_certificates(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
-                .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
-                .default_headers(headers),
-        )
-        .build()
+        // Process-cached: timeouts are constants, so the headers key
+        // suffices; the session id is attached per request, not here.
+        let defaults_have_session_header = headers.contains_key(SESSION_ID_HEADER);
+        let key = crate::util::shared_http::cache_key("image_gen", &headers);
+        let http = crate::util::shared_http::cached_client(key, || {
+            xai_grok_extra_ca::build_reqwest_client(|builder| {
+                builder
+                    .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
+                    .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
+                    .default_headers(headers.clone())
+            })
+        })
         .map_err(|e| {
             xai_tool_runtime::ToolError::invalid_arguments(format!(
                 "Failed to build HTTP client: {e}"
@@ -151,7 +155,20 @@ impl ImageGenClient {
             api_key_provider,
             attribution_callback: None,
             tier_restricted: *tier_restricted,
+            session_header: None,
+            defaults_have_session_header,
         })
+    }
+
+    /// Attach [`SESSION_ID_HEADER`] per request; a caller-provided
+    /// `extra_headers` value is never overridden.
+    pub fn with_session_id(mut self, session_id: &str) -> Self {
+        if !self.defaults_have_session_header
+            && let Ok(value) = HeaderValue::from_str(session_id)
+        {
+            self.session_header = Some(value);
+        }
+        self
     }
 
     /// Whether the current user's tier (free / X Basic) is zero-limited on
@@ -184,8 +201,22 @@ impl ImageGenClient {
         &self.base_url
     }
 
-    pub(crate) fn http(&self) -> &reqwest::Client {
-        &self.http
+    /// Every Imagine-API POST goes through here so no call site can miss
+    /// the bearer or per-request session header (image_edit once did).
+    pub(crate) fn post_json(
+        &self,
+        url: &str,
+        payload: &serde_json::Value,
+        sent_bearer: Option<&str>,
+    ) -> reqwest::RequestBuilder {
+        let mut req = self.http.post(url).json(payload);
+        if let Some(key) = sent_bearer {
+            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
+        }
+        if let Some(ref session) = self.session_header {
+            req = req.header(SESSION_ID_HEADER, session.clone());
+        }
+        req
     }
 
     pub(crate) fn writer(&self) -> &super::storage::SessionFileWriter {
@@ -216,10 +247,7 @@ impl ImageGenClient {
         // emit see the same value (even if the provider rotates between
         // the send and the response handling).
         let sent_bearer = self.current_bearer().await;
-        let mut req = self.http.post(&url).json(&payload);
-        if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
+        let req = self.post_json(&url, &payload, sent_bearer.as_deref());
 
         let response = req.send().await.map_err(|e| {
             xai_tool_runtime::ToolError::invalid_arguments(format!(
@@ -285,18 +313,14 @@ pub enum ImageGenConfig {
         extra_headers: indexmap::IndexMap<String, String>,
         image_gen_enabled: bool,
         image_edit_enabled: bool,
-        /// Optional Imagine model override for `image_gen`. When `Some(non-empty)`,
-        /// `image_gen` calls that model instead of the default quality model
-        /// ([`XAI_IMAGINE_MODEL`]). Driven by the remote
-        /// `image_gen_model_override` config flag. `image_edit` is unaffected.
+        /// Optional Imagine model override for `image_gen`. When `Some(non-empty)`, `image_gen`
+        /// calls that model instead of the default quality model ([`XAI_IMAGINE_MODEL`]). Driven by
+        /// the remote `image_gen_model_override` config flag. `image_edit` is unaffected.
         model_override: Option<String>,
         edit_model_override: Option<String>,
-        /// `true` when the user is on a tier the Imagine server zero-limits
-        /// (free / X Basic). The tools stay advertised to the model, but
-        /// `image_gen` / `image_edit` short-circuit at call time with the
-        /// SuperGrok upsell prose instead of a doomed request. Set by the
-        /// host from the subscription tier; always `false` for team /
-        /// API-key / workspace callers.
+        /// `true` when the user is on a tier the Imagine server zero-limits (free / X Basic). The tools stay advertised to the
+        /// model, but `image_gen` / `image_edit` short-circuit at call time with the SuperGrok upsell prose instead of a doomed
+        /// request. Set by the host from the subscription tier; always `false` for team / API-key / workspace callers.
         tier_restricted: bool,
     },
 }
@@ -309,16 +333,6 @@ impl ImageGenConfig {
     /// Credentials present — required to construct any of the clients.
     pub fn has_credentials(&self) -> bool {
         matches!(self, Self::Enabled { .. })
-    }
-
-    /// Stamp [`SESSION_ID_HEADER`] onto `extra_headers`. A caller-provided
-    /// value is never overwritten. No-op when `Disabled`.
-    pub fn stamp_session_id_header(&mut self, session_id: &str) {
-        if let Self::Enabled { extra_headers, .. } = self {
-            extra_headers
-                .entry(SESSION_ID_HEADER.to_string())
-                .or_insert_with(|| session_id.to_string());
-        }
     }
 
     pub fn image_gen_enabled(&self) -> bool {
@@ -458,7 +472,14 @@ impl xai_tool_runtime::Tool for ImageGenTool {
             return Ok(ToolOutput::Text(TIER_RESTRICTED_UPSELL.into()));
         }
 
+        let generate_span = tracing::info_span!(
+            "image_gen.generate_wait",
+            elapsed_ms = tracing::field::Empty,
+        );
+        let generate_start = std::time::Instant::now();
         let image_bytes = client.generate(&input.prompt, &input.aspect_ratio).await?;
+        generate_span.record("elapsed_ms", generate_start.elapsed().as_millis() as i64);
+        drop(generate_span);
 
         let session_folder = {
             let res = resources.lock().await;
@@ -490,10 +511,6 @@ mod tests {
     fn tool_name_and_description() {
         let tool = ImageGenTool;
         assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "image_gen");
-        assert!(
-            crate::types::tool_metadata::ToolMetadata::description_template(&tool)
-                .contains("Generate a new image from a text description")
-        );
     }
 
     #[test]
@@ -523,41 +540,80 @@ mod tests {
     }
 
     #[test]
-    fn stamp_session_id_header_sets_and_preserves() {
-        let mk = |headers: indexmap::IndexMap<String, String>| ImageGenConfig::Enabled {
+    fn with_session_id_defers_to_caller_configured_header() {
+        let mut preset = indexmap::IndexMap::new();
+        preset.insert(SESSION_ID_HEADER.to_string(), "caller-set".to_string());
+        let cfg = ImageGenConfig::Enabled {
             api_key: "k".into(),
             base_url: "https://api.x.ai/v1".into(),
-            extra_headers: headers,
+            extra_headers: preset,
             image_gen_enabled: true,
             image_edit_enabled: true,
             model_override: None,
             edit_model_override: None,
             tier_restricted: false,
         };
-        let hdrs = |cfg: &ImageGenConfig| match cfg {
-            ImageGenConfig::Enabled { extra_headers, .. } => extra_headers.clone(),
-            _ => unreachable!(),
+        let client = ImageGenClient::new(&cfg, None)
+            .unwrap()
+            .with_session_id("sess-1");
+        assert!(client.session_header.is_none());
+
+        let cfg_plain = ImageGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::IndexMap::new(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
         };
-
-        let mut cfg = mk(indexmap::IndexMap::new());
-        cfg.stamp_session_id_header("sess-123");
+        let client = ImageGenClient::new(&cfg_plain, None)
+            .unwrap()
+            .with_session_id("sess-1");
         assert_eq!(
-            hdrs(&cfg).get(SESSION_ID_HEADER).map(String::as_str),
-            Some("sess-123")
+            client.session_header.as_ref().and_then(|v| v.to_str().ok()),
+            Some("sess-1")
         );
+    }
 
-        let mut preset = indexmap::IndexMap::new();
-        preset.insert(SESSION_ID_HEADER.to_string(), "caller-set".to_string());
-        let mut cfg = mk(preset);
-        cfg.stamp_session_id_header("sess-123");
+    // Pins the image_edit wire regression: every POST routes through
+    // post_json, which attaches both bearer and session id.
+    #[tokio::test]
+    async fn post_json_attaches_session_and_bearer_headers() {
+        let cfg = ImageGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::IndexMap::new(),
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
+        };
+        let client = ImageGenClient::new(&cfg, None)
+            .unwrap()
+            .with_session_id("sess-42");
+        let req = client
+            .post_json(
+                "https://api.x.ai/v1/images",
+                &serde_json::json!({}),
+                Some("tok"),
+            )
+            .build()
+            .unwrap();
         assert_eq!(
-            hdrs(&cfg).get(SESSION_ID_HEADER).map(String::as_str),
-            Some("caller-set")
+            req.headers()
+                .get(SESSION_ID_HEADER)
+                .and_then(|v| v.to_str().ok()),
+            Some("sess-42")
         );
-
-        let mut disabled = ImageGenConfig::Disabled;
-        disabled.stamp_session_id_header("sess-123");
-        assert!(!disabled.has_credentials());
+        assert_eq!(
+            req.headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer tok")
+        );
     }
 
     #[test]
@@ -642,10 +698,9 @@ mod tests {
 
     #[tokio::test]
     async fn tier_restricted_short_circuits_with_upsell() {
-        // A free / X Basic user's image_gen call returns the SuperGrok upsell
-        // prose as a normal result (no HTTP, no error card) so the model can
-        // relay it. Only the client is inserted — the short-circuit returns
-        // before any other resource (e.g. SessionFolder) is required.
+        // A free / X Basic user's image_gen call returns the SuperGrok upsell prose as a normal
+        // result (no HTTP, no error card) so the model can relay it. Only the client is inserted —
+        // the short-circuit returns before any other resource (e.g. SessionFolder) is required.
         let cfg = ImageGenConfig::Enabled {
             api_key: "k".into(),
             base_url: "https://api.x.ai/v1".into(),

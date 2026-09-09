@@ -2,17 +2,9 @@
 #[allow(unused_imports)]
 use super::common::*;
 
-/// Bracketed-paste guard for the deferred clipboard-probe stack: a short
-/// (below the 4-line chip threshold) text paste must echo inline in the
-/// prompt promptly — the pasted caption stays synchronous while any clipboard
-/// attachment probe runs off the UI thread — and submitting must send the
-/// payload intact to the model.
-///
-/// Linux-hermetic: the bracketed arm's clipboard probe block is
-/// cfg(macos/windows), so this path never touches a real clipboard on CI. On
-/// a macOS dev machine the probe MAY consult the real host clipboard and
-/// attach an incidental image chip, so all asserts are contains-style on
-/// unique sentinels, never whole-prompt/message equality.
+/// A short text paste (below the 4-line chip threshold) must echo inline in the prompt right away,
+/// and submitting must send it to the model intact. The bracketed-paste clipboard probe is
+/// cfg(macos/windows), so on Linux CI this test never touches a real clipboard.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn paste_bracketed_inline_text_echoes_and_sends_intact() {
@@ -30,10 +22,10 @@ async fn paste_bracketed_inline_text_echoes_and_sends_intact() {
     harness
         .wait_for_text(WELCOME_SCREEN_SENTINEL, WELCOME_TIMEOUT)
         .expect("welcome text");
+    leave_home(&mut harness);
 
-    // A paste on the welcome screen promotes to a new session and re-processes
-    // the same event through its prompt (ActionThenForward), so the payload
-    // lands in the full-featured session prompt.
+    // Paste into the session composer (home stays up until the first send; this
+    // test covers the full-featured session prompt, including the drop classifier).
     harness
         .inject_keys(format!("\x1b[200~{LINE_A}\n{LINE_B}\x1b[201~").as_bytes())
         .expect("bracketed-paste two-line payload");

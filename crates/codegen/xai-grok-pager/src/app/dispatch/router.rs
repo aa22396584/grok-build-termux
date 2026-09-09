@@ -10,14 +10,15 @@ use super::ctx::{
 };
 use super::dashboard::{
     dispatch_dashboard_attach, dispatch_dashboard_begin_rename, dispatch_dashboard_change_location,
-    dispatch_dashboard_commit_rename, dispatch_dashboard_confirm_worktree,
-    dispatch_dashboard_create_new_agent_with_detail, dispatch_dashboard_delete,
-    dispatch_dashboard_dispatch, dispatch_dashboard_dispatch_slash,
-    dispatch_dashboard_open_location_picker, dispatch_dashboard_open_shortcuts_help,
-    dispatch_dashboard_overlay_cycle, dispatch_dashboard_overlay_exit,
-    dispatch_dashboard_overlay_stop, dispatch_dashboard_peek_cycle_mode,
-    dispatch_dashboard_peek_reply, dispatch_dashboard_permission_followup,
-    dispatch_dashboard_permission_select, dispatch_dashboard_question_answer,
+    dispatch_dashboard_close_session_picker, dispatch_dashboard_commit_rename,
+    dispatch_dashboard_confirm_worktree, dispatch_dashboard_create_new_agent_with_detail,
+    dispatch_dashboard_delete, dispatch_dashboard_dispatch, dispatch_dashboard_dispatch_slash,
+    dispatch_dashboard_open_location_picker, dispatch_dashboard_open_session_picker,
+    dispatch_dashboard_open_shortcuts_help, dispatch_dashboard_overlay_cycle,
+    dispatch_dashboard_overlay_exit, dispatch_dashboard_overlay_stop,
+    dispatch_dashboard_peek_cycle_mode, dispatch_dashboard_peek_reply,
+    dispatch_dashboard_permission_followup, dispatch_dashboard_permission_select,
+    dispatch_dashboard_pick_session, dispatch_dashboard_question_answer,
     dispatch_dashboard_reorder, dispatch_dashboard_select, dispatch_dashboard_stop,
     dispatch_dashboard_toggle_auto_approve, dispatch_dashboard_toggle_grouping,
     dispatch_dashboard_toggle_pin, dispatch_dashboard_toggle_worktree, dispatch_exit_dashboard,
@@ -34,9 +35,9 @@ use super::modes::{
     set_permission_mode, set_plan_mode, set_yolo_mode,
 };
 use super::notes::{
-    dispatch_enter_remember_mode, dispatch_open_feedback_pane,
+    dispatch_enter_remember_mode, dispatch_open_feedback_modal,
     dispatch_save_remember_note_from_modal, dispatch_send_btw, dispatch_send_feedback,
-    dispatch_send_recap, dispatch_send_remember_note,
+    dispatch_send_recap, dispatch_send_remember_note, dispatch_submit_feedback_modal,
 };
 use super::permissions::{
     dispatch_permission_cancel, dispatch_permission_followup, dispatch_permission_select,
@@ -59,10 +60,11 @@ use super::session::fork::{
     dispatch_startup_fork_session,
 };
 use super::session::lifecycle::{
-    clear_startup_actions, dispatch_agent_type_mismatch_answered,
+    clear_startup_actions, dispatch_accept_consent, dispatch_agent_type_mismatch_answered,
     dispatch_delete_current_session_answered, dispatch_exit_session, dispatch_new_session,
     dispatch_new_session_inner, dispatch_new_session_with_id, dispatch_new_worktree_session,
-    dispatch_trust_folder, open_delete_current_session_question, open_new_session_question,
+    dispatch_trust_folder, leave_welcome_for_session, open_delete_current_session_question,
+    open_new_session_question,
 };
 use super::session::load::{
     dispatch_cycle_session_source_filter, dispatch_load_session, dispatch_pick_content_session,
@@ -77,16 +79,17 @@ use super::settings::setters::{
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
     set_combine_queued_prompts, set_compact_mode, set_confirm_before_rewind,
-    set_contextual_hint_image_input, set_contextual_hint_plan_mode, set_contextual_hint_send_now,
-    set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap, set_contextual_hint_undo,
-    set_contextual_hint_word_select, set_default_model, set_default_selected_permission,
-    set_display_refresh_auto_cadence, set_follow_up_behavior, set_fork_secondary_model,
-    set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection,
-    set_max_thoughts_width, set_multiline_mode, set_page_flip_on_send, set_prompt_suggestions,
-    set_remember_tool_approvals, set_render_mermaid, set_respect_manual_folds, set_screen_mode,
-    set_scroll_lines, set_scroll_mode, set_scroll_speed, set_show_thinking_blocks, set_show_tips,
-    set_simple_mode, set_theme, set_timeline, set_timestamps, set_vim_mode, set_voice_capture_mode,
-    set_voice_keybind_enabled, set_voice_stt_language,
+    set_contextual_hint_export_copy, set_contextual_hint_image_input,
+    set_contextual_hint_plan_mode, set_contextual_hint_send_now, set_contextual_hint_small_screen,
+    set_contextual_hint_ssh_wrap, set_contextual_hint_undo, set_contextual_hint_word_select,
+    set_default_model, set_default_selected_permission, set_display_refresh_auto_cadence,
+    set_follow_up_behavior, set_fork_secondary_model, set_group_tool_verbs, set_hunk_tracker_mode,
+    set_invert_scroll, set_keep_text_selection, set_max_thoughts_width, set_multiline_mode,
+    set_page_flip_on_send, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
+    set_respect_manual_folds, set_screen_mode, set_scroll_lines, set_scroll_mode, set_scroll_speed,
+    set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timeline,
+    set_timestamps, set_vim_mode, set_voice_capture_mode, set_voice_keybind_enabled,
+    set_voice_stt_language,
 };
 use super::settings::ui::{
     dispatch_confirm_reset_setting, dispatch_open_command_palette, dispatch_open_howto_guides,
@@ -115,6 +118,7 @@ use super::voice::{dispatch_enable_voice_mode, dispatch_voice_stop, dispatch_voi
 use crate::app::actions::{Action, Effect};
 use crate::app::agent_view::ActivePane;
 use crate::app::app_view::{ActiveView, AppView, AuthState};
+use crate::app::consent::ConsentState;
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
 use xai_grok_telemetry::session_ctx::log_event;
@@ -136,26 +140,20 @@ pub(super) fn dispatch_copy_auth_url(
     }]
 }
 /// Dispatch an action: mutate state, return effects to execute.
-///
-/// The returned `Vec<Effect>` may be empty (pure state mutation) or contain
-/// async work that the event loop should spawn.
-///
-/// The match feeds the `sync_sleep_inhibitor(app)` tail below it; arms that
-/// `return` early bypass that tail deliberately. Do not extract a returning
-/// arm into a handler: as a delegation its `return`s become plain arm values
-/// and start flowing through the tail. The fat inline arms stayed inline for
-/// this reason; audit an arm's `return`s before moving it.
+/// The returned `Vec<Effect>` may be empty (pure state mutation) or contain async work that the event loop should spawn.
+/// Do not extract a returning arm into a handler: as a delegation its `return`s become plain arm values and start flowing through the tail.
+pub(in crate::app::dispatch) fn confirmed_quit(app: &mut AppView) -> Vec<Effect> {
+    if let Some(tx) = &app.voice_cmd_tx {
+        let _ = tx.try_send(xai_grok_voice::VoiceCommand::Shutdown);
+    }
+    let mut effects = unregister_all_active_sessions(app);
+    effects.push(Effect::Quit);
+    effects
+}
 pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
     app.reconcile_foreign_resume_launch();
     let effects = match action {
-        Action::Quit | Action::QuitConfirmed => {
-            if let Some(tx) = &app.voice_cmd_tx {
-                let _ = tx.try_send(xai_grok_voice::VoiceCommand::Shutdown);
-            }
-            let mut effects = unregister_all_active_sessions(app);
-            effects.push(Effect::Quit);
-            effects
-        }
+        Action::Quit | Action::QuitConfirmed => confirmed_quit(app),
         Action::QuitForUpdate => {
             let mut effects = unregister_all_active_sessions(app);
             app.quit_for_update = true;
@@ -181,6 +179,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             super::dispatch_initial_prompt(app, prompt)
         }
         Action::RelaunchInScreenMode { minimal } => {
+            if !crate::app::screen_mode_relaunch::exec_switch_forced() {
+                app.pending_screen_mode_switch = Some(if minimal {
+                    crate::app::ScreenMode::Minimal
+                } else {
+                    crate::app::ScreenMode::Fullscreen
+                });
+                return vec![];
+            }
             if let Some(session_id) = app.active_session_id().map(str::to_owned) {
                 app.relaunch = Some(crate::app::app_view::ScreenModeRelaunch {
                     minimal,
@@ -192,6 +198,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             effects
         }
         Action::NewSession => dispatch_new_session(app),
+        Action::LeaveHome => leave_welcome_for_session(app),
         #[cfg(feature = "local-workspace")]
         Action::ConfirmWelcomeLocalWorkspaceAck => {
             match crate::views::welcome::workspace_mode::confirm_welcome_local_workspace_ack(
@@ -202,7 +209,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         crate::views::welcome::WelcomeWorkspaceMode::LocalWorkspace;
                     app.welcome_session_local_workspace = Some(Some(cfg));
                     app.welcome_local_workspace_ack_pending = false;
-                    let effects = if app.deferred_startup.worktree {
+                    let mut effects = if app.deferred_startup.worktree {
                         app.deferred_startup.worktree = false;
                         let label = app.deferred_startup.worktree_label.take();
                         let git_ref = app.deferred_startup.worktree_ref.take();
@@ -231,6 +238,9 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     };
                     if !crate::app::event_loop::welcome_oneshot_applies_to_effects(&effects) {
                         app.welcome_session_local_workspace = None;
+                    }
+                    if let Some(prompt) = app.deferred_startup.prompt.take() {
+                        effects.extend(dispatch(Action::SendPrompt(prompt), app));
                     }
                     effects
                 }
@@ -271,7 +281,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         } => dispatch_startup_fork_session(app, parent_session_id, parent_cwd, new_session_id),
         Action::FetchSessionList => dispatch_fetch_session_list(app),
         Action::CycleSessionSourceFilter => dispatch_cycle_session_source_filter(app),
-        Action::ShowSessionPicker => dispatch_show_session_picker(app),
+        Action::ShowSessionPicker => {
+            if app.workspace_dashboard_enabled
+                && matches!(app.active_view, ActiveView::AgentDashboard)
+            {
+                dispatch_dashboard_open_session_picker(app)
+            } else {
+                dispatch_show_session_picker(app)
+            }
+        }
         Action::SessionPickerClosed => dispatch_session_picker_closed(app),
         Action::PickSession(index) => dispatch_pick_session(app, index),
         Action::PickSessionInWorktree(index) => dispatch_pick_session_in_worktree(app, index),
@@ -286,12 +304,14 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                 return vec![];
             }
             use crate::views::modal::ActiveModal;
-            let detail_generation = app.session_picker_detail_generation;
+            use crate::views::session_picker_surface::SessionPickerHost;
             let from_modal = if let Some(agent) = get_active_agent_mut(app) {
                 if let Some(ActiveModal::SessionPicker {
                     entries: Some(ref entries),
                     ref mut state,
                     ref content_results,
+                    generation,
+                    detail_seq,
                     ..
                 }) = agent.active_modal
                 {
@@ -307,10 +327,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                         let entry = &entries[idx];
                         if native_source && entry.card_detail.is_none() {
                             return vec![Effect::LoadCardDetail {
+                                host: SessionPickerHost::AgentModal,
+                                generation,
                                 source: entry.source.clone(),
                                 session_id: entry.id.clone(),
                                 cwd: entry.cwd.clone(),
-                                generation: detail_generation,
+                                seq: detail_seq,
                             }];
                         }
                         return vec![];
@@ -355,10 +377,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
                     && entry.card_detail.is_none()
                 {
                     return vec![Effect::LoadCardDetail {
+                        host: SessionPickerHost::Welcome,
+                        generation: app.session_picker_generation,
                         source: entry.source.clone(),
                         session_id: entry.id.clone(),
                         cwd: entry.cwd.clone(),
-                        generation: detail_generation,
+                        seq: app.session_picker_detail_seq,
                     }];
                 }
             } else if native_source
@@ -393,6 +417,31 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowWordSelectTip => dispatch_show_word_select_tip(app),
         Action::AcceptWordSelectTip => dispatch_accept_word_select_tip(app),
         Action::DrainQueue => dispatch_drain_queue(app),
+        Action::PromptBlockAnswered { row_id, choice } => {
+            use crate::app::actions::PromptBlockChoice;
+            with_active_agent(app, |agent| match choice {
+                PromptBlockChoice::Edit => {
+                    agent.enter_queue_edit(row_id, false, None);
+                }
+                PromptBlockChoice::Resend => {
+                    agent.release_hook_block_hold();
+                }
+                PromptBlockChoice::Discard => {
+                    if let Some(removed) = agent.remove_local_queue_row(row_id) {
+                        for image in &removed.images {
+                            crate::prompt_images::cleanup_image(
+                                crate::prompt_images::SessionPathPolicy::Preserve,
+                                image,
+                            );
+                        }
+                    }
+                }
+            });
+            match choice {
+                PromptBlockChoice::Edit => vec![],
+                PromptBlockChoice::Resend | PromptBlockChoice::Discard => dispatch_drain_queue(app),
+            }
+        }
         Action::QueueRemoveShared {
             id,
             expected_version,
@@ -443,8 +492,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RunEditedQueuedCommand {
             local_id,
             server,
-            text,
-        } => queue::dispatch_run_edited_queued_command(app, local_id, server, text),
+            submission,
+        } => queue::dispatch_run_edited_queued_command(app, local_id, server, submission),
         Action::FocusPrompt => {
             with_active_agent(app, |agent| {
                 agent.set_active_pane(ActivePane::Prompt, false);
@@ -487,13 +536,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         }
         Action::NextResponse => {
             with_scrollback(app, |s| {
-                s.next_response();
+                if let Some(t) = s.turn_below_viewport_top() {
+                    s.jump_to_turn(t);
+                }
             });
             vec![]
         }
         Action::PrevResponse => {
             with_scrollback(app, |s| {
-                s.prev_response();
+                if let Some(t) = s.turn_above_viewport_top() {
+                    s.jump_to_turn(t);
+                }
             });
             vec![]
         }
@@ -603,7 +656,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowDebugStatus => {
             let on = |b: bool| if b { "on" } else { "off" };
             let msg = format!(
-                "debug toggles: scroll {} \u{00b7} fps {} \u{00b7} log {} \u{2014} toggle with /debug <scroll|fps|log>",
+                "debug toggles: scroll {} \u{00b7} fps {} \u{00b7} log {}. Toggle with /debug <scroll|fps|log>",
                 on(app.scroll_debug_hud.enabled()),
                 on(app.fps_hud.enabled()),
                 on(app.scroll_state.scroll_log_active()),
@@ -645,35 +698,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             if group_toggled {
                 return vec![];
             }
-            let mut credit_card: Option<(String, xai_grok_telemetry::events::CreditLimitChoice)> =
-                None;
-            with_scrollback(app, |s| {
-                if let Some(idx) = s.selected()
-                    && let Some(entry) = s.entry(idx)
-                    && let crate::scrollback::block::RenderBlock::CreditLimit(ref blk) = entry.block
-                {
-                    use crate::scrollback::blocks::CreditLimitCardAction;
-                    let choice = match blk.action {
-                        CreditLimitCardAction::PurchaseCredits => {
-                            xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits
-                        }
-                        CreditLimitCardAction::EnablePayg
-                        | CreditLimitCardAction::IncreasePaygLimit => {
-                            xai_grok_telemetry::events::CreditLimitChoice::PayAsYouGo
-                        }
-                    };
-                    credit_card = Some((blk.url.clone(), choice));
-                }
-            });
-            if let Some((url, choice)) = credit_card {
-                log_event(xai_grok_telemetry::events::CreditLimitUpsellClicked {
-                    surface: xai_grok_telemetry::events::CreditLimitUpsellSurface::InlineCard,
-                    choice,
-                });
-                open_url_or_show(app, &url);
-            } else {
-                dispatch_open_block_viewer(app);
-            }
+            dispatch_open_block_viewer(app);
             vec![]
         }
         Action::OpenExtensionsModal { tab, trigger } => {
@@ -726,13 +751,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             let Some(agent) = app.agents.get_mut(&id) else {
                 return vec![];
             };
+            let Some(session_id) = agent.session.session_id.clone() else {
+                return vec![];
+            };
             if let Some(ref mut modal) = agent.extensions_modal {
                 modal.skills_data = crate::views::extensions_modal::TabDataState::Loading;
                 modal.workflows_data = crate::views::extensions_modal::TabDataState::Loading;
             }
-            let Some(session_id) = agent.session.session_id.clone() else {
-                return vec![];
-            };
             vec![
                 Effect::FetchSkillsList {
                     agent_id: id,
@@ -753,6 +778,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             };
             if let Some(ref mut modal) = agent.extensions_modal {
                 modal.mcps_data = crate::views::extensions_modal::TabDataState::Loading;
+                modal.clear_managed_connectors_wait();
             }
             let Some(session_id) = agent.session.session_id.clone() else {
                 return vec![];
@@ -1025,8 +1051,30 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ShowPlan => dispatch_show_plan(app),
         Action::EnterPlanMode { description } => dispatch_enter_plan_mode(app, description),
         Action::SetPlanMode(kind) => set_plan_mode(app, kind),
-        Action::OpenFeedbackPane => dispatch_open_feedback_pane(app),
-        Action::SendFeedback(text) => dispatch_send_feedback(app, text),
+        Action::OpenFeedbackModal(open) => dispatch_open_feedback_modal(app, open),
+        Action::SubmitFeedbackModal { modal_id } => dispatch_submit_feedback_modal(app, modal_id),
+        Action::RequestFeedbackDraft { request } => {
+            let ActiveView::Agent(agent_id) = app.active_view else {
+                return vec![];
+            };
+            let Some(session_id) = app
+                .agents
+                .get(&agent_id)
+                .and_then(|agent| agent.session.session_id.clone())
+            else {
+                return vec![];
+            };
+            vec![Effect::FeedbackDraftRequest {
+                agent_id,
+                session_id,
+                request,
+            }]
+        }
+        Action::SendFeedback {
+            text,
+            images,
+            trace,
+        } => dispatch_send_feedback(app, text, images, trace),
         Action::EnterRememberMode => dispatch_enter_remember_mode(app),
         Action::SendRememberNote(text) => dispatch_send_remember_note(app, text),
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
@@ -1081,6 +1129,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetContextualHintSendNow(v) => set_contextual_hint_send_now(app, v),
         Action::SetContextualHintSmallScreen(v) => set_contextual_hint_small_screen(app, v),
         Action::SetContextualHintWordSelect(v) => set_contextual_hint_word_select(app, v),
+        Action::SetContextualHintExportCopy(v) => set_contextual_hint_export_copy(app, v),
         Action::SetContextualHintSshWrap(v) => set_contextual_hint_ssh_wrap(app, v),
         Action::SetTheme(v) => set_theme(app, v),
         Action::SetAutoDarkTheme(v) => set_auto_dark_theme(app, v),
@@ -1112,6 +1161,7 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SwitchAccount => dispatch_switch_account(app),
         Action::CheckSubscription => vec![Effect::CheckSubscription { verify: None }],
         Action::OpenSupergrokUrl => dispatch_open_supergrok_url(app),
+        Action::RetryCreditLimitPrompt => super::billing::dispatch_retry_credit_limit_prompt(app),
         Action::OpenUrl(url) => {
             if url.starts_with("file://") {
                 let opened = url::Url::parse(&url)
@@ -1147,6 +1197,12 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::OpenManagedConnectors => {
+            if let ActiveView::Agent(id) = app.active_view
+                && let Some(agent) = app.agents.get_mut(&id)
+                && let Some(ref mut modal) = agent.extensions_modal
+            {
+                modal.begin_managed_connectors_wait();
+            }
             let url = crate::views::mcps_modal::managed_connectors_url(app.team_id.as_deref());
             open_url_or_show(app, &url);
             vec![]
@@ -1174,6 +1230,17 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             vec![]
         }
         Action::TrustFolder => dispatch_trust_folder(app),
+        Action::AcceptConsent => dispatch_accept_consent(app),
+        Action::OpenConsentLink(index) => {
+            let url = match &app.consent_state {
+                ConsentState::Pending { notice, .. } => notice.links.get(index).cloned(),
+                ConsentState::Done => None,
+            };
+            if let Some(url) = url {
+                open_url_or_show(app, &url);
+            }
+            vec![]
+        }
         Action::TriggerDeepSearch => dispatch_trigger_deep_search(app, false),
         Action::ForceDeepSearch => dispatch_trigger_deep_search(app, true),
         Action::PickContentSession { session_id, cwd } => {
@@ -1201,6 +1268,10 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
             if !matches!(source.as_str(), "local" | "remote" | "both")
                 || !session_picker_entry_matches(app, &source, &session_id)
             {
+                return vec![];
+            }
+            if crate::app::workspace_sync::permanent_delete_blocked(app, &session_id) {
+                app.show_toast("Cannot delete session: dashboard workspace is read-only");
                 return vec![];
             }
             app.show_toast("Deleting session\u{2026}");
@@ -1318,6 +1389,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::OpenDashboard => dispatch_open_dashboard(app),
         Action::ExitDashboard => dispatch_exit_dashboard(app),
         Action::DashboardAttach(id) => dispatch_dashboard_attach(app, id),
+        Action::DashboardCloseSessionPicker => dispatch_dashboard_close_session_picker(app),
+        Action::DashboardPickSession(index) => dispatch_dashboard_pick_session(app, index),
         Action::DashboardDispatch { text, attach } => {
             dispatch_dashboard_dispatch(app, text, attach)
         }
@@ -1338,12 +1411,13 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::DashboardDelete => dispatch_dashboard_delete(app),
         Action::DashboardCycleMode => {
             let policy_block = app.yolo_policy_block;
+            let auto_mode_gate = app.auto_mode_gate;
             if let Some(d) = app.dashboard.as_mut() {
-                d.pending_mode = d.pending_mode.cycle();
+                d.pending_mode = d.pending_mode.cycle(auto_mode_gate);
                 if d.pending_mode == crate::views::dashboard::DashboardDispatchMode::AlwaysApprove
                     && let Some(warning) = policy_block
                 {
-                    d.pending_mode = d.pending_mode.cycle();
+                    d.pending_mode = d.pending_mode.cycle(auto_mode_gate);
                     d.set_error_toast(warning);
                 }
             }
@@ -1465,9 +1539,29 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::JumpPickerSelect(turn_idx) => dispatch_jump_picker_select(app, turn_idx),
         Action::JumpDismiss => dispatch_jump_dismiss(app),
     };
+    restore_stash_where_the_draft_was_consumed(app);
     app.reconcile_foreign_resume_launch();
     sync_sleep_inhibitor(app);
     effects
+}
+/// Drains the agent and its focused subagent: the paste drain reports on the parent while `with_active_agent` would pick the child.
+/// A stranded flag restores on a later dispatch.
+fn restore_stash_where_the_draft_was_consumed(app: &mut AppView) {
+    let ActiveView::Agent(id) = app.active_view else {
+        return;
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return;
+    };
+    if let Some(child_sid) = agent.active_subagent.clone()
+        && let Some(child) = agent.subagent_views.get_mut(&child_sid)
+        && child.take_draft_consumed()
+    {
+        child.auto_restore_stash_after_send();
+    }
+    if agent.take_draft_consumed() {
+        agent.auto_restore_stash_after_send();
+    }
 }
 pub(super) fn dispatch_action_result(
     app: &mut AppView,

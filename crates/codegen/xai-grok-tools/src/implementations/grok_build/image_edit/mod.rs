@@ -16,7 +16,6 @@ use std::io::Cursor;
 
 use base64::Engine as _;
 use image::ImageReader;
-use reqwest::header::AUTHORIZATION;
 
 use crate::attribution::ToolConsumer;
 use crate::implementations::grok_build::image_gen::{ImageGenClient, ImageGenResponse};
@@ -156,12 +155,9 @@ async fn resolve_to_data_url(value: &str) -> Result<String, xai_tool_runtime::To
 // Attachment reference resolution
 // ---------------------------------------------------------------------------
 
-/// Parse an attached-image reference token into its 1-based display number.
-///
-/// Accepts the forms the model naturally produces for an image the user
-/// attached to the conversation: `[Image #1]`, `Image #1`, `image #1`, or
-/// a bare `#1`. Returns `None` for anything else — filesystem paths and
-/// `data:` / `file://` URLs fall through to direct resolution.
+/// Parse an attached-image reference token into its 1-based display number. Accepts the forms the model naturally
+/// produces for an image the user attached to the conversation: `[Image #1]`, `Image #1`, `image #1`, or a bare `#1`.
+/// Returns `None` for anything else — filesystem paths and `data:` / `file://` URLs fall through to direct resolution.
 fn parse_attachment_token(value: &str) -> Option<usize> {
     let trimmed = value.trim();
     // Strip optional surrounding brackets: `[…]`.
@@ -184,12 +180,9 @@ fn parse_attachment_token(value: &str) -> Option<usize> {
     }
 }
 
-/// Resolve a single `image` argument to a reference `resolve_to_data_url`
-/// can read.
-///
-/// Attachment tokens (`[Image #N]`) are mapped to the durable reference
-/// the shell recorded for the current turn; everything else (filesystem
-/// paths, `data:` / `file://` URLs) passes through unchanged.
+/// Resolve a single `image` argument to a reference `resolve_to_data_url` can read. Attachment
+/// tokens (`[Image #N]`) are mapped to the durable reference the shell recorded for the current
+/// turn; everything else (filesystem paths, `data:` / `file://` URLs) passes through unchanged.
 fn resolve_attachment_reference(
     reference: &str,
     attached: Option<&crate::types::resources::AttachedImages>,
@@ -198,10 +191,9 @@ fn resolve_attachment_reference(
         return Ok(reference.to_owned());
     };
     let registry = attached.filter(|a| !a.0.is_empty()).ok_or_else(|| {
-        // Tokens only resolve against the current message's attachments. An
-        // empty registry usually means the image was attached in an earlier
-        // message (cross-turn editing isn't supported yet), so steer the
-        // model to ask for a re-attach rather than retry the dead token.
+        // Tokens only resolve against the current message's attachments. An empty registry usually
+        // means the image was attached in an earlier message (cross-turn editing isn't supported
+        // yet), so steer the model to ask for a re-attach rather than retry the dead token.
         xai_tool_runtime::ToolError::invalid_arguments(format!(
             "image reference {reference:?} matches no image attached to this message. If it was \
              attached earlier in the conversation, ask the user to re-attach it here; otherwise \
@@ -360,10 +352,9 @@ impl xai_tool_runtime::Tool for ImageEditTool {
             "response_format": "b64_json",
         });
 
-        // API: single ref → "image" object; multiple → "images" array.
-        // For single-image edits the API auto-detects aspect ratio from the
-        // input image and ignores the `aspect_ratio` field. Only send it
-        // for multi-image edits where the API needs an explicit ratio.
+        // API: single ref → "image" object; multiple → "images" array. For single-image edits the
+        // API auto-detects aspect ratio from the input image and ignores the `aspect_ratio` field.
+        // Only send it for multi-image edits where the API needs an explicit ratio.
         let mut imgs: Vec<serde_json::Value> = data_urls
             .iter()
             .map(|u| serde_json::json!({ "url": u }))
@@ -376,10 +367,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         }
 
         let sent_bearer = client.current_bearer().await;
-        let mut req = client.http().post(&url).json(&payload);
-        if let Some(ref key) = sent_bearer {
-            req = req.header(AUTHORIZATION, format!("Bearer {key}"));
-        }
+        let req = client.post_json(&url, &payload, sent_bearer.as_deref());
 
         let response = req.send().await.map_err(|e| {
             xai_tool_runtime::ToolError::invalid_arguments(format!(
@@ -461,8 +449,6 @@ mod tests {
     fn tool_name_and_description() {
         let tool = ImageEditTool;
         assert_eq!(xai_tool_runtime::Tool::id(&tool).as_str(), "image_edit");
-        let desc = crate::types::tool_metadata::ToolMetadata::description_template(&tool);
-        assert!(desc.contains("Edit or transform"));
     }
 
     #[test]
@@ -668,10 +654,9 @@ mod tests {
 
     #[test]
     fn resolve_reference_maps_by_number_not_position() {
-        // After a mid-compose chip removal the surviving numbers are
-        // non-contiguous (`#1`, `#3`). Resolution must key on the number,
-        // not the list position, or `[Image #3]` would resolve to the wrong
-        // file (or wrongly error).
+        // After a mid-compose chip removal the surviving numbers are non-contiguous (`#1`, `#3`).
+        // Resolution must key on the number, not the list position, or `[Image #3]` would resolve
+        // to the wrong file (or wrongly error).
         let attached = crate::types::resources::AttachedImages(vec![
             (1, "/tmp/first.png".to_owned()),
             (3, "/tmp/third.png".to_owned()),
