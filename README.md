@@ -43,6 +43,11 @@ There is no `grok-build` package in Termux APT yet. The supported install is the
 
 ```sh
 # Runtime tools used by grok doctor / search / git
+
+> **Development home:** https://github.com/ImL1s/grok-build-termux  
+> Please open issues and pull requests there.  
+> **Mirrors:** [Codeberg](https://codeberg.org/ImL1s/grok-build-termux) · [GitLab](https://gitlab.com/aa22396584/grok-build-termux)
+
 pkg update -y
 pkg install -y git ripgrep fd bash termux-api curl
 
