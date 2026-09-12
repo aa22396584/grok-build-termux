@@ -4,7 +4,7 @@
 #
 # Target Architectures : aarch64-linux-android, x86_64-linux-android
 # Requirements        : 64-bit Android Bionic libc, 16 KiB ELF alignment
-# Usage               : curl -sSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
+# Usage               : curl -sSL https://codeberg.org/ImL1s/grok-build-termux/raw/branch/termux-native/install.sh | bash
 # Manual Version Spec : VERSION=v1.0.24 curl -sSL ... | bash
 #                       bash install.sh v1.0.24
 # =============================================================================
@@ -227,7 +227,7 @@ resolve_version() {
   fi
 
   if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
-    die 5 "Unable to resolve latest release tag from GitHub. You can specify a version explicitly, e.g.: VERSION=v1.0.24 curl -sSL https://raw.githubusercontent.com/${repo}/termux-native/install.sh | bash"
+    die 5 "Unable to resolve latest release tag from GitHub. You can specify a version explicitly, e.g.: VERSION=v1.0.24 curl -sSL https://codeberg.org/ImL1s/grok-build-termux/raw/branch/termux-native/install.sh | bash"
   fi
 }
 
