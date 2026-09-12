@@ -47,10 +47,10 @@ pkg update -y
 pkg install -y git ripgrep fd bash termux-api curl
 
 # Latest grok binary
-curl -fsSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
+curl -fsSL https://codeberg.org/ImL1s/grok-build-termux/raw/branch/termux-native/install.sh | bash
 
 # Pin a version
-VERSION=v1.0.24 curl -fsSL https://raw.githubusercontent.com/ImL1s/grok-build-termux/termux-native/install.sh | bash
+VERSION=v1.0.24 curl -fsSL https://codeberg.org/ImL1s/grok-build-termux/raw/branch/termux-native/install.sh | bash
 
 # Verify
 grok --version
