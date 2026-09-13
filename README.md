@@ -10,7 +10,7 @@
   Grok Build for Android / Termux (<code>grok</code>)
 </h1>
 
-[![Termux Port CI](https://github.com/ImL1s/grok-build-termux/actions/workflows/ci.yml/badge.svg)](https://github.com/ImL1s/grok-build-termux/actions/workflows/ci.yml)
+[![Termux Port CI](https://github.com/aa22396584/grok-build-termux/actions/workflows/ci.yml/badge.svg)](https://github.com/aa22396584/grok-build-termux/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Platform: Android Termux](https://img.shields.io/badge/platform-Android%20%7C%20Termux-brightgreen.svg)](#architecture--bionic-runtime)
 [![Page Size: 16 KiB Ready](https://img.shields.io/badge/page_size-16_KiB_aligned-orange.svg)](#16-kib-page-size-alignment)
@@ -39,14 +39,17 @@
 
 ### Method 1: GitHub Releases (Recommended)
 
-There is no `grok-build` package in Termux APT yet. The supported install is the installer: it detects `aarch64` or `x86_64`, downloads the matching tarball from [GitHub Releases](https://github.com/ImL1s/grok-build-termux/releases/latest), verifies `SHA256SUMS.txt`, and installs into `$PREFIX/bin/grok`.
+There is no `grok-build` package in Termux APT yet. The supported install is the installer: it detects `aarch64` or `x86_64`, downloads the matching tarball from [GitHub Releases](https://github.com/aa22396584/grok-build-termux/releases/latest), verifies `SHA256SUMS.txt`, and installs into `$PREFIX/bin/grok`.
 
 ```sh
 # Runtime tools used by grok doctor / search / git
 
-> **Development home:** https://github.com/ImL1s/grok-build-termux  
-> Please open issues and pull requests there.  
-> **Mirrors:** [Codeberg](https://codeberg.org/ImL1s/grok-build-termux) · [GitLab](https://gitlab.com/aa22396584/grok-build-termux)
+**Development, Issues & Pull Requests:**  
+https://github.com/aa22396584/grok-build-termux
+
+**Mirrors:**  
+[GitLab](https://gitlab.com/aa22396584/grok-build-termux) ·
+[Codeberg](https://codeberg.org/ImL1s/grok-build-termux)
 
 pkg update -y
 pkg install -y git ripgrep fd bash termux-api curl
@@ -295,7 +298,7 @@ If you prefer to configure your environment manually or integrate with custom bu
 pkg install -y rust clang binutils-is-llvm protobuf make git
 
 # 2. Clone repository
-git clone https://github.com/ImL1s/grok-build-termux.git
+git clone https://github.com/aa22396584/grok-build-termux.git
 cd grok-build-termux
 
 # 3. Build release binary
