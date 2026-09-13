@@ -51,6 +51,9 @@ https://github.com/aa22396584/grok-build-termux
 [GitLab](https://gitlab.com/aa22396584/grok-build-termux) ·
 [Codeberg](https://codeberg.org/ImL1s/grok-build-termux)
 
+
+> **Why this GitHub home?** Public development moved here from [`ImL1s/grok-build-termux`](https://github.com/ImL1s/grok-build-termux) because that GitHub account is currently restricted (anonymous visitors get 404 on the profile and many assets). This is the same project. Please open Issues and Pull Requests here.
+
 pkg update -y
 pkg install -y git ripgrep fd bash termux-api curl
 
