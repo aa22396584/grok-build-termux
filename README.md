@@ -1,3 +1,5 @@
+> Development continues at https://github.com/aa22396584/grok-build-termux because this GitHub account is currently restricted for anonymous visitors.
+
 <div align="center">
 
 <h1>
